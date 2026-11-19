@@ -1,0 +1,6 @@
+build/
+external/
+dist/
+packaging/windows/output/
+*.user
+.vs/
