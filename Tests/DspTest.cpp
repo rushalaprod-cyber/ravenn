@@ -2,6 +2,7 @@
 // Mix/Delta, audibilite de Mouth/Mask, mode No Latency, auto master,
 // et capture de l'interface en PNG.
 #include "../Source/PluginProcessor.h"
+#include "../Source/PluginEditor.h"
 #include <cstdio>
 
 static void setP (RavennProcessor& p, const char* id, float v)
@@ -93,6 +94,17 @@ int main()
         { "Punch 100",            { { "punch", 100 }, { "in", 6 } }, true },
         { "OTT+Punch+tout",       { { "ott", 100 }, { "punch", 100 }, { "in", 15 }, { "mouth", 100 }, { "mask", 100 },
                                     { "clip", 15 }, { "os", 4 } }, true },
+        { "Sat 3 bandes 24 dB",   { { "satDrive1", 24 }, { "satDrive2", 24 }, { "satDrive3", 24 }, { "satStyle2", 5 }, { "satStyle3", 6 } }, true },
+        { "Caractere tape+wow",   { { "charAmt", 100 }, { "charWow", 100 }, { "charType", 0 } }, true },
+        { "Vinyle + crackle",     { { "charAmt", 100 }, { "charWow", 100 }, { "charNoise", 100 }, { "charType", 6 } }, true },
+        { "Fresh air + 3D + space", { { "airMid", 100 }, { "airHigh", 100 }, { "depth3d", 100 }, { "space", 100 }, { "spaceSize", 100 } }, true },
+        { "Voix +6 dB",           { { "voice", 6 }, { "voiceFreq", 3000 } }, true },
+        { "Limiteur +18 Stealth", { { "limGain", 18 }, { "limStyle", 8 }, { "limCeil", -1 } }, true },
+        { "Limiteur sans lookahead", { { "limGain", 18 }, { "limLook", 0 } }, true },
+        { "Limiteur off clip+12", { { "limOn", 0 }, { "clip", 12 } }, true },
+        { "Tout a fond 1.2",      { { "in", 15 }, { "mouth", 100 }, { "mask", 100 }, { "satDrive1", 24 }, { "satDrive2", 24 },
+                                    { "satDrive3", 24 }, { "charAmt", 100 }, { "airMid", 100 }, { "airHigh", 100 }, { "depth3d", 100 },
+                                    { "space", 100 }, { "ott", 100 }, { "punch", 100 }, { "limGain", 24 }, { "os", 4 } }, true },
     };
 
     for (auto& c : cases)
@@ -162,11 +174,122 @@ int main()
         std::printf ("%-22s x1 %6.1f  x2 %6.1f  x8 %6.1f  %s\n", "Delta alignement", res[0], res[1], res[2], check (ok));
     }
 
+    // --- Limiteur : plafond respecte en true peak (mesure 4x) avec +18 dB
+    {
+        RavennProcessor p;
+        setP (p, "limGain", 18); setP (p, "limCeil", -1.0f);
+        run (p, 48000.0, 512, 0.8f, 6.0);
+        const float tpDb = p.truePeakDb.load();
+        std::printf ("%-22s true peak %6.2f dBTP (plafond -1)  %s\n", "Limiteur TP", tpDb, check (tpDb <= -0.6f));
+    }
+
+    // --- Sidechain voix : creuse la prod quand la voix est presente
+    {
+        RavennProcessor p;
+        auto layout = p.getBusesLayout();
+        layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
+        const bool ok = p.setBusesLayout (layout);
+        setP (p, "scDepth", 100);
+        p.prepareToPlay (48000.0, 512);
+        juce::AudioBuffer<float> buf (4, 512);
+        juce::MidiBuffer midi;
+        Gen gen (48000.0);
+        juce::AudioBuffer<float> two (2, 512);
+        double ph = 0;
+        for (int k = 0; k < 200; ++k)
+        {
+            gen.fill (two, 512, 0.5f);
+            for (int c = 0; c < 2; ++c) buf.copyFrom (c, 0, two, c, 0, 512);
+            for (int i = 0; i < 512; ++i)
+            {
+                ph += 2 * juce::MathConstants<double>::pi * 1000.0 / 48000.0;
+                const float v = (float) (0.3 * std::sin (ph));
+                buf.setSample (2, i, v); buf.setSample (3, i, v);
+            }
+            p.processBlock (buf, midi);
+        }
+        const float cut = p.scCutDb.load();
+        std::printf ("%-22s bus %s, creusement %5.1f dB  %s\n", "Sidechain voix", ok ? "ok" : "refuse", cut,
+                     check (ok && p.scConnected.load() && cut < -3.f));
+    }
+
+    // --- Reference : analyse d'un fichier WAV genere
+    {
+        juce::File wav = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ravenn_ref_test.wav");
+        wav.deleteFile();
+        {
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::OutputStream> os (wav.createOutputStream().release());
+            std::unique_ptr<juce::AudioFormatWriter> w (fmt.createWriterFor (os.get(), 48000.0, 2, 24, {}, 0));
+            if (w != nullptr)
+            {
+                os.release();
+                Gen gen (48000.0);
+                juce::AudioBuffer<float> b (2, 4800);
+                for (int k = 0; k < 100; ++k) { gen.fill (b, 4800, 0.5f); w->writeFromAudioSampleBuffer (b, 0, 4800); }
+            }
+        }
+        RavennProcessor p;
+        p.loadReference (wav);
+        for (int k = 0; k < 400 && p.refState.load() == RavennProcessor::refLoading; ++k) juce::Thread::sleep (25);
+        const auto r = p.getRefInfo();
+        std::printf ("%-22s %s  %.1f LUFS  %.1f s  %s\n", "Reference WAV", r.name.toRawUTF8(), r.lufs, r.seconds,
+                     check (r.valid && r.lufs > -30.f && r.lufs < 0.f));
+
+        // auto master en mode REFERENCE : vise le loudness de la reference
+        setP (p, "amTarget", 7);
+        p.prepareToPlay (48000.0, 512);
+        p.startAutoMaster();
+        run (p, 48000.0, 512, 0.15f, 40.0, false, true);
+        p.requestMeterReset();
+        const auto o = run (p, 48000.0, 512, 0.15f, 8.0);
+        std::printf ("%-22s ref %.1f obtenu %.1f LUFS  match %.0f %%  %s\n", "Auto master REF", r.lufs, o.lufs,
+                     p.apvts.getRawParameterValue ("refMatch")->load(), check (std::abs (o.lufs - r.lufs) < 1.5f));
+        wav.deleteFile();
+    }
+
+    // --- Undo / redo
+    {
+        RavennProcessor p;
+        p.undo.beginNewTransaction();
+        setP (p, "mouth", 70);
+        p.apvts.state.setProperty ("dummy", 1, nullptr);
+        p.undo.beginNewTransaction();
+        // laisser l'APVTS pousser la valeur dans l'arbre
+        p.getStateInformation (*std::make_unique<juce::MemoryBlock>());
+        const bool can = p.undo.canUndo();
+        std::printf ("%-22s %s\n", "Undo disponible", check (can));
+    }
+
+    // --- CPU : temps de calcul pour 10 s de musique (temps reel = 1.0)
+    {
+        struct Cfg { const char* name; std::vector<std::pair<const char*, float>> prm; };
+        std::vector<Cfg> cfgs = {
+            { "defaut (x2)", {} },
+            { "tout actif x2", { { "mouth", 50 }, { "mask", 50 }, { "satDrive1", 6 }, { "satDrive2", 6 }, { "satDrive3", 6 },
+                                 { "charAmt", 50 }, { "airMid", 50 }, { "airHigh", 50 }, { "depth3d", 50 }, { "space", 30 },
+                                 { "ott", 50 }, { "punch", 30 }, { "charWow", 30 } } },
+            { "tout actif x8", { { "mouth", 50 }, { "mask", 50 }, { "satDrive1", 6 }, { "satDrive2", 6 }, { "satDrive3", 6 },
+                                 { "charAmt", 50 }, { "airMid", 50 }, { "airHigh", 50 }, { "depth3d", 50 }, { "space", 30 },
+                                 { "ott", 50 }, { "punch", 30 }, { "os", 3 } } },
+        };
+        for (auto& c : cfgs)
+        {
+            RavennProcessor p;
+            for (auto& [id, v] : c.prm) setP (p, id, v);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            run (p, 48000.0, 512, 0.5f, 10.0);
+            const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+            std::printf ("CPU %-18s %6.0f ms pour 10 s  (%.1f %% d'un coeur)  %s\n", c.name, ms, ms / 100.0,
+                         check (ms < 10000.0 * 0.5));
+        }
+    }
+
     // --- Auto master : doit approcher la cible de loudness
-    for (int tgt = 0; tgt < 3; ++tgt)
+    for (int tgt : { 4, 2, 1, 6 })
         for (float g : { 0.15f, 0.6f })
         {
-            const float targets[3] = { -14.f, -9.f, -7.f };
+            const float targets[8] = { 0.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
             RavennProcessor p;
             setP (p, "amTarget", (float) tgt);
             p.prepareToPlay (48000.0, 512);
@@ -195,16 +318,21 @@ int main()
     // --- Capture de l'interface
     {
         RavennProcessor p;
-        setP (p, "clip", 6); setP (p, "mouth", 45); setP (p, "mask", 30); setP (p, "monoBass", 1);
+        setP (p, "clip", 4); setP (p, "mouth", 45); setP (p, "mask", 30); setP (p, "monoBass", 1); setP (p, "limGain", 3);
         setP (p, "depth", 20); setP (p, "analog", 25); setP (p, "width", 120); setP (p, "tilt", 1.5f);
         run (p, 48000.0, 512, 0.8f, 6.0);
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
-        juce::File out = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getSiblingFile ("ui.png");
-        out.deleteFile();
-        juce::FileOutputStream os (out);
-        juce::PNGImageFormat().writeImageToStream (img, os);
-        std::printf ("Capture UI : %s\n", out.getFullPathName().toRawUTF8());
+        for (int pg = 0; pg < 5; ++pg)
+        {
+            if (auto* re = dynamic_cast<RavennEditor*> (ed.get())) re->setPage (pg);
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            juce::File out = juce::File::getSpecialLocation (juce::File::currentExecutableFile)
+                                 .getSiblingFile (pg == 0 ? juce::String ("ui.png") : "ui" + juce::String (pg) + ".png");
+            out.deleteFile();
+            juce::FileOutputStream os (out);
+            juce::PNGImageFormat().writeImageToStream (img, os);
+            std::printf ("Capture UI : %s\n", out.getFullPathName().toRawUTF8());
+        }
     }
 
     std::printf ("\n%s (%d echec(s))\n", failures == 0 ? "TOUS LES TESTS PASSENT" : "DES TESTS ECHOUENT", failures);

@@ -231,15 +231,20 @@ namespace shape
     inline double mouth (double x, double amount, double c2, double k, double lim) noexcept
     {
         if (amount <= 0.0) return x;
-        const double raw = c2 * x * x / std::max (0.25, 1.0 - k * x);
+        // 1 / (1 - u) adouci : meme developpement pres de 0 (H2/H3/H4 de MONSTER),
+        // mais sans cassure quand le niveau monte (pas d'harmoniques hautes parasites)
+        const double u = 0.9 * std::tanh (k * x / 0.9);
+        const double raw = c2 * x * x / (1.0 - u);
         return (x + amount * lim * std::tanh (raw / lim)) * (1.0 - 0.08 * amount);
     }
 
     // THE MASK (cale sur MONSTER) : saturation impaire statique + gain du Side.
     // Petit signal : gain G ; sinus Side a -18 dBFS : H3 ~ -26 dB a 100 %.
+    // Sigmoide algebrique d'ordre 1,9 : ajustee sur MONSTER de -30 a -12 dBFS
     inline double maskSat (double b, double a, double G) noexcept
     {
-        return G * std::tanh (a * b) / a;
+        const double u = std::abs (a * b);
+        return G * b / std::pow (1.0 + std::pow (u, 1.9), 1.0 / 1.9);
     }
 }
 
@@ -337,10 +342,18 @@ struct OTT
     std::array<double, nb> env {}, gDb {};
     double att = 0, rel = 0, gS = 0;
 
+    double xLo = 0, xHi = 0;
     void prepare (double fs, double timeAmt) noexcept
     {
-        for (int c = 0; c < 2; ++c) { split[0][(size_t) c].setLowpass (fs, 88.0); split[1][(size_t) c].setLowpass (fs, 2500.0); }
+        xLo = xHi = 0;
+        setXover (fs, 88.0, 2500.0);
         setTime (fs, timeAmt);
+    }
+    void setXover (double fs, double lo, double hi) noexcept
+    {
+        if (lo == xLo && hi == xHi) return;
+        xLo = lo; xHi = hi;
+        for (int c = 0; c < 2; ++c) { split[0][(size_t) c].setLowpass (fs, lo); split[1][(size_t) c].setLowpass (fs, hi); }
     }
     void setTime (double fs, double timeAmt) noexcept
     {
@@ -354,7 +367,7 @@ struct OTT
         env.fill (0); gDb.fill (0);
     }
 
-    void process (double* x, int nch, double depth) noexcept
+    void process (double* x, int nch, double depth, const double* bandAmt) noexcept
     {
         double band[nb][2] {};
         for (int c = 0; c < nch; ++c)
@@ -389,7 +402,7 @@ struct OTT
             for (int b = 0; b < nb; ++b)
             {
                 const double g = std::pow (10.0, (gDb[(size_t) b] + 6.0) / 20.0);   // +6 dB de make-up
-                y += band[b][c] * (1.0 + depth * (g - 1.0));
+                y += band[b][c] * (1.0 + depth * bandAmt[b] * (g - 1.0));
             }
             x[c] = y;
         }

@@ -29,7 +29,6 @@ struct Host
         String err;
         plug = fm.createPluginInstance (*types[0], fs, block, err);
         if (! plug) { std::cout << "echec : " << err << "\n"; return false; }
-        plug->enableAllBuses();
         plug->setPlayConfigDetails (2, 2, fs, block);
         plug->prepareToPlay (fs, block);
 
@@ -257,6 +256,52 @@ int main (int argc, char** argv)
             std::cout << "| fuite Mid " << String (db (tone (Mo, 400)) - db (a1), 1) << "\n";
         }
         h.set (h.mask, 0.f);
+    }
+
+    if (what == "fine")
+    {
+        std::cout << "\n== FIN : Mouth 1 kHz selon le niveau\n";
+        for (float m : { 0.5f, 1.f })
+        {
+            h.set (h.mouth, m);
+            for (double lv : { -30.0, -24.0, -12.0 })
+                harmonics (h, 1000, lv, h.mouth->getCurrentValueAsText().toRawUTF8());
+        }
+        h.set (h.mouth, 0.f);
+        std::cout << "\n== FIN : Mask (MID) sinus Side 400 Hz selon le niveau\n";
+        if (h.band) h.set (h.band, 0.f);
+        for (float m : { 0.25f, 0.5f, 1.f })
+        {
+            h.set (h.mask, m);
+            for (double lv : { -30.0, -24.0, -18.0, -12.0 })
+            {
+                const int N = (int) (fs * 3);
+                auto s = sine (400, std::pow (10.0, lv / 20.0), N);
+                std::vector<float> r (s.size());
+                for (size_t i = 0; i < s.size(); ++i) r[i] = -s[i];
+                std::vector<float> oL, oR;
+                h.run (s, r, oL, oR);
+                std::vector<float> So (oL.size());
+                for (size_t i = 0; i < oL.size(); ++i) So[i] = 0.5f * (oL[i] - oR[i]);
+                const double a1 = tone (So, 400);
+                std::cout << "  mask " << h.mask->getCurrentValueAsText() << " @" << lv << " : S1 " << String (db (a1) - lv, 2)
+                          << " | H3 " << String (db (tone (So, 1200)) - db (a1), 1) << "  H5 " << String (db (tone (So, 2000)) - db (a1), 1) << "\n";
+            }
+        }
+        h.set (h.mask, 0.f);
+        std::cout << "\n== FIN : base Side 400 Hz\n";
+        for (double lv : { -30.0, -18.0 })
+        {
+            const int N = (int) (fs * 3);
+            auto s = sine (400, std::pow (10.0, lv / 20.0), N);
+            std::vector<float> r (s.size());
+            for (size_t i = 0; i < s.size(); ++i) r[i] = -s[i];
+            std::vector<float> oL, oR;
+            h.run (s, r, oL, oR);
+            std::vector<float> So (oL.size());
+            for (size_t i = 0; i < oL.size(); ++i) So[i] = 0.5f * (oL[i] - oR[i]);
+            std::cout << "  base @" << lv << " : S1 " << String (db (tone (So, 400)) - lv, 2) << "\n";
+        }
     }
 
     h.plug->releaseResources();

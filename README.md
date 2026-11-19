@@ -1,60 +1,63 @@
-# ravenn — clipper / saturation de mastering (VST3 · AU · Standalone)
+# ravenn — suite de mastering (VST3 · AU · Standalone)
+
+Interface en 5 pages : **CORE**, **TONE & SPACE**, **SATURATION & CHARACTER**, **LIMITER & OUTPUT**,
+**VOICE & REFERENCE**. Spectre, mesures et auto master restent toujours visibles.
 
 ## Chaîne du signal
 
-1. **IN** (−15…+15 dB) — gain d'entrée.
-2. **EQ** en position *PRE* : Tilt (pivot 1 kHz), Low (100 Hz), Air (12 kHz).
-3. **STEREO** : Width (0–200 %), Mono Bass (graves en mono sous 20–300 Hz).
-4. **DYNAMICS** :
-   - **OTT** : compression multibande haut + bas (3 bandes, 88 Hz / 2,5 kHz), TIME règle la vitesse.
-     L'expansion vers le haut s'arrête sous −70 dB : aucun souffle remonté.
-   - **PUNCH** : renforce les attaques (kick, snare), surtout dans le grave. Placé avant le clipper,
-     qui rattrape les pics qu'il crée.
-5. *Sur-échantillonnage x1…x16 (FIR) pour tous les étages non linéaires, ou zéro latence avec NO LATENCY :*
-   - **THE MOUTH** : distorsion à harmoniques paires, large bande, calée par mesure sur MONSTER
-     (H2 à −33 / −27 / −21 dB pour 25 / 50 / 100 % sur un sinus à −18 dBFS). Le grain monte avec le niveau.
-   - **BODY** (activé par défaut) : la couleur de base de MONSTER, bosse à 60 Hz et Side +1 dB.
-   - **THE MASK** : calé sur MONSTER. Saturation impaire + jusqu'à +7 dB de Side dans la bande choisie
-     (MID 70 Hz–1,1 kHz · HI MID 600 Hz–2,6 kHz · HIGH > 1,5 kHz · FULL > 130 Hz), découpée en
-     Linkwitz-Riley. Le Mid n'est jamais touché.
-   - **BASS DEPTH** : harmoniques des graves + bosse de sub à 55 Hz.
-   - **ANALOG** : transfo, aigus adoucis, saturation douce, crosstalk. Aucun bruit ajouté.
-   - **CLIPPER** : HARD / SOFT / ANALOG, sur tout le spectre ou une seule bande (LOW < 200 Hz,
-     MID 200 Hz–4 kHz, HIGH > 4 kHz).
-6. **EQ** en position *POST*.
-7. Plafond de sécurité : jamais au-dessus de 0 dBFS.
-8. **AUTO GAIN**, **MIX**, **DELTA**, puis **OUT**.
-9. **BYPASS** : fondu vers le signal d'origine, latence conservée (aussi lié au bypass du DAW).
+1. **IN** (−15…+15 dB).
+2. **EQ PRE** : Tilt, Low, Air · **EQ MATCH** (10 octaves, calé sur une référence).
+3. **VOICE SIDECHAIN** : la voix branchée sur l'entrée sidechain creuse la prod sur ses fréquences
+   (6 bandes de 250 Hz à 8 kHz, jusqu'à −9 dB), en temps réel.
+4. **STEREO** : Width, Mono Bass · **VOICE** : présence ±6 dB sur le centre (0,8–6 kHz) ·
+   **3D DEPTH** : côtés décorrélés dans les aigus + centre avancé (compatible mono).
+5. **DYNAMICS** : OTT 3 bandes (fréquences de coupure et quantité par bande réglables, TIME),
+   **PUNCH** (attaques), **SPACE** (toute petite réverb, le grave n'y passe pas).
+6. *Sur-échantillonnage x1…x16 pour les étages non linéaires (ou zéro latence avec NO LATENCY) :*
+   - **THE MOUTH** · **BODY** · **THE MASK** : calés par mesure sur MONSTER (voir plus bas).
+   - **BASS DEPTH**, **MULTIBAND SATURATION** (3 bandes, 7 styles : Clean Tube, Warm Tube, Tape,
+     Transistor, Amp, Rectify, Foldback), **CHARACTER** (Tape 15 / 30 ips, Cassette, Tube Console,
+     Class-A Console, Transformer, Vinyl), **ANALOG**, **FRESH AIR** (Mid Air 5 kHz, High Air 11 kHz,
+     dynamique : recule sur les sifflantes), **CLIPPER** (Hard / Soft / Tube, plein spectre ou une bande).
+7. **EQ POST**, pleurage (WOW), craquements (CRACKLE, à 0 par défaut : aucun bruit).
+8. **LIMITER** : brickwall à anticipation, true peak (interpolation 4x), relâchement adaptatif,
+   9 styles (Transparent, Punchy, Dynamic, Allround, Aggressive, Modern, Bus, Safe, Stealth),
+   Gain, Ceiling, Lookahead, Attack, Release, Link transitoires / relâchement, Soft Clip, Unity, Dither.
+9. **AUTO GAIN**, **MIX**, **DELTA**, **OUT**, **BYPASS**.
 
-**LINK** relie In et Clipper en sens inverse. **NO LATENCY** coupe le sur-échantillonnage (0 sample).
+**DELTA** : écoute uniquement la différence entre le son traité et l'original, ramenés au même volume :
+ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affiche alors cette différence.
 
-Mouth et Mask ont été calés avec `Tools/Probe.cpp`, un banc qui charge un VST3 et mesure sa réponse
-à des signaux de test (harmoniques, gain Mid/Side par octave). Le code de MONSTER n'a pas été lu.
+**UNDO / REDO**, A/B, presets (dossier ouvrable, import de fichiers `.preset`).
+
+### Mouth, Mask, Body
+Calés avec `Tools/Probe.cpp`, un banc qui charge un VST3 et mesure sa réponse (harmoniques à −30 / −24 /
+−18 / −12 dBFS, gain Mid/Side par octave), puis ajustement numérique des courbes. Mask : gain et H3 à
+±0,5 dB de −30 à −18 dBFS ; Mouth : H2 / H3 / H4 à ±1–2 dB. Le code de MONSTER n'a pas été lu.
+La saturation multibande et le limiteur sont des conceptions originales (aucun code de FabFilter,
+d'iZotope ou d'un autre éditeur n'a été lu ou copié).
 
 ## Auto master
-Choisis une cible (STREAM −14 · CLUB −9 · LOUD −7 LUFS), lance la lecture et clique **AUTO MASTER** :
-1. ravenn écoute 6 s de musique (loudness, crêtes, équilibre spectral sur 5 bandes, corrélation stéréo,
-   stéréo dans le grave) ;
-2. il règle EQ, couleur, stéréo, mono bass, clipper SOFT et le gain ;
-3. il mesure le résultat et ajuste le niveau jusqu'à la cible (jusqu'à 4 passes).
-Tu peux tout retoucher ensuite ; A/B pour comparer avec ton réglage d'avant.
+Cibles : **0 LUFS (max)**, −7 Loud, −9 Club, −11 Spotify Loud, −14 Streaming, −16 Apple Music,
+−23 EBU R128 (TV), **REFERENCE**. Lance la lecture et clique **AUTO MASTER** : 6 s d'écoute, réglages
+(EQ, couleur, stéréo, limiteur : −1 dBTP pour le streaming / la TV, −0,3 dB pour le club), puis
+ajustement du niveau. En mode REFERENCE, il vise le loudness de la référence importée, recopie son
+équilibre par octave (EQ MATCH) et sa largeur stéréo.
 
 ## Mesures
-LUFS momentané / court terme / intégré, True Peak, barres LED In / Out / GR, oscilloscope du clipper,
-analyseur de spectre entrée / sortie (pente 4,5 dB/oct).
+LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper, spectre entrée /
+sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.1.0-windows-setup.exe` → VST3 dans `C:\Program Files\Common Files\VST3`,
-  application dans `C:\Program Files\ravenn`.
-- **macOS** : `ravenn-1.1.0-macos.pkg` → VST3, AU et application. Le paquet n'est pas signé par Apple :
-  au premier lancement, ouvre **Réglages Système › Confidentialité et sécurité › Ouvrir quand même**
-  (ou clic droit › Ouvrir). Les plugins se chargent ensuite normalement dans le DAW.
+- **Windows** : `ravenn-1.2.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.2.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+  sécurité › Ouvrir quand même*).
+
+Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.
 
 ## Compiler
-Windows (VS 2022 Build Tools + CMake) :
 ```
-cmake -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release --target ravenn_VST3 ravenn_Standalone
+cmake -B build -A x64
+cmake --build build --config Release --target ravenn_VST3 ravenn_Standalone ravennTest
 ```
-macOS : automatique via GitHub Actions (`.github/workflows/build.yml`) : à chaque push, les installeurs
-Windows et Mac sont produits dans l'onglet *Actions › Artifacts*.
+GitHub Actions produit les installeurs Windows et Mac à chaque push.

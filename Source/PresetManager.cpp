@@ -28,6 +28,20 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
         { u8 ("OTT Écrasé"),        { { "ott", 45.0f }, { "ottTime", 40.0f }, { "punch", 20.0f }, { "clip", 3.0f },
                                       { "clipShape", 1.0f }, { "mask", 15.0f }, { "maskBand", 2.0f } } },
         { u8 ("Monster Brut"),      { { "in", 3.0f }, { "mouth", 50.0f }, { "mask", 25.0f }, { "maskBand", 1.0f } } },
+        { u8 ("Bande Analogique"),  { { "charType", 0.0f }, { "charAmt", 60.0f }, { "charWow", 12.0f }, { "mouth", 20.0f },
+                                      { "clip", 2.0f }, { "clipShape", 1.0f } } },
+        { u8 ("Vinyle Lo-Fi"),      { { "charType", 6.0f }, { "charAmt", 75.0f }, { "charWow", 40.0f }, { "charNoise", 30.0f },
+                                      { "satDrive2", 6.0f }, { "satStyle2", 1.0f } } },
+        { u8 ("Saturation Chaude"), { { "satDrive1", 6.0f }, { "satDrive2", 4.0f }, { "satDrive3", 3.0f },
+                                      { "satStyle1", 1.0f }, { "satStyle2", 0.0f }, { "satStyle3", 2.0f }, { "clip", 2.0f } } },
+        { u8 ("Air & Espace"),      { { "airMid", 35.0f }, { "airHigh", 50.0f }, { "depth3d", 40.0f }, { "space", 20.0f },
+                                      { "spaceSize", 35.0f } } },
+        { u8 ("Voix Devant"),       { { "voice", 2.5f }, { "voiceFreq", 2800.0f }, { "airMid", 20.0f }, { "mask", 15.0f },
+                                      { "maskBand", 2.0f } } },
+        { u8 ("Streaming -14 Propre"), { { "limGain", 4.0f }, { "limCeil", -1.0f }, { "limStyle", 0.0f }, { "clip", 2.0f },
+                                      { "clipShape", 1.0f }, { "amTarget", 4.0f } } },
+        { u8 ("Loud Club"),         { { "in", 3.0f }, { "clip", 5.0f }, { "clipShape", 1.0f }, { "limGain", 4.0f }, { "limStyle", 5.0f },
+                                      { "punch", 20.0f }, { "mouth", 25.0f }, { "amTarget", 1.0f } } },
     };
     current = factory.front().name;
 }
@@ -36,6 +50,30 @@ juce::File PresetManager::getDirectory()
 {
     return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
                .getChildFile ("ravenn").getChildFile ("Presets");
+}
+
+int PresetManager::importFiles (const juce::Array<juce::File>& files)
+{
+    auto dir = getDirectory();
+    dir.createDirectory();
+    int n = 0;
+    for (auto& f : files)
+    {
+        if (! f.existsAsFile()) continue;
+        // on verifie que c'est bien un preset ravenn (XML avec l'etat RAVENN)
+        auto xml = juce::XmlDocument::parse (f);
+        if (xml == nullptr || ! xml->hasTagName (state.state.getType())) continue;
+        auto dest = dir.getNonexistentChildFile (f.getFileNameWithoutExtension(), ".preset", false);
+        if (f.copyFileTo (dest)) ++n;
+    }
+    return n;
+}
+
+void PresetManager::openFolder() const
+{
+    auto dir = getDirectory();
+    dir.createDirectory();
+    dir.startAsProcess();
 }
 
 juce::StringArray PresetManager::getFactoryNames() const

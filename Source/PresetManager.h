@@ -16,6 +16,8 @@ public:
     void load (const juce::String& name);
     bool save (const juce::String& name);
     bool remove (const juce::String& name);
+    int importFiles (const juce::Array<juce::File>& files);   // copie des .preset dans le dossier
+    void openFolder() const;
     void next();
     void previous();
 
