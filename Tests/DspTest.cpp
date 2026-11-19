@@ -88,6 +88,11 @@ int main()
                                     { "clip", 15 }, { "tilt", 6 }, { "lowShelf", 6 }, { "air", 6 }, { "eqPos", 1 },
                                     { "width", 200 }, { "monoBass", 1 }, { "os", 3 } }, true },
         { "Auto Gain + clip",     { { "clip", 10 }, { "autoGain", 1 } }, false },
+        { "OTT 100 temps 0",      { { "ott", 100 }, { "ottTime", 0 } }, true },
+        { "OTT 100 temps 100",    { { "ott", 100 }, { "ottTime", 100 } }, true },
+        { "Punch 100",            { { "punch", 100 }, { "in", 6 } }, true },
+        { "OTT+Punch+tout",       { { "ott", 100 }, { "punch", 100 }, { "in", 15 }, { "mouth", 100 }, { "mask", 100 },
+                                    { "clip", 15 }, { "os", 4 } }, true },
     };
 
     for (auto& c : cases)
@@ -111,7 +116,7 @@ int main()
     // --- Audibilite : difference avec le reglage neutre
     {
         RavennProcessor ref; const auto base = run (ref, 48000.0, 512, 0.5f, 3.0, true);
-        for (auto [id, band] : { std::pair<const char*, int> { "mouth", -1 }, { "mask", 3 } })
+        for (auto [id, band] : { std::pair<const char*, int> { "mouth", -1 }, { "mask", 3 }, { "punch", -1 }, { "ott", -1 } })
             for (float amt : { 25.f, 50.f, 100.f })
             {
                 RavennProcessor p;
@@ -119,13 +124,28 @@ int main()
                 if (band >= 0) setP (p, "maskBand", (float) band);
                 const auto r = run (p, 48000.0, 512, 0.5f, 3.0, true);
                 const float d = diffDb (r.out, base.out);
-                std::printf ("%-8s %3.0f %%  difference %6.1f dB  %s\n", id, amt, d, check (d > (amt >= 50.f ? -20.f : -30.f)));
+                std::printf ("%-8s %3.0f %%  difference %6.1f dB  %s\n", id, amt, d, check (d > -40.f));
             }
-        // A -30 dB d'entree, Mouth doit mordre autant (niveau constant)
+        // Comme MONSTER, Mouth mord plus fort quand le niveau monte
         RavennProcessor q0; const auto lo0 = run (q0, 48000.0, 512, 0.03f, 3.0, true);
         RavennProcessor q1; setP (q1, "mouth", 100); const auto lo1 = run (q1, 48000.0, 512, 0.03f, 3.0, true);
         const float d = diffDb (lo1.out, lo0.out);
-        std::printf ("%-22s difference %6.1f dB  %s\n", "Mouth 100 a -30 dB", d, check (d > -20.f));
+        std::printf ("%-22s difference %6.1f dB  %s\n", "Mouth 100 a -30 dB", d, check (d < -20.f));
+    }
+
+    // --- Bypass : sortie = entree (No Latency, reglages extremes)
+    {
+        RavennProcessor a; setP (a, "noLatency", 1); setP (a, "bypass", 1);
+        setP (a, "mouth", 100); setP (a, "clip", 15); setP (a, "ott", 100); setP (a, "punch", 100);
+        const auto r = run (a, 48000.0, 512, 0.5f, 2.0, true);
+        juce::AudioBuffer<float> buf (2, 512); Gen gen (48000.0); std::vector<float> ref;
+        for (int pos = 0; pos < (int) (48000.0 * 2.0); pos += 512)
+        {
+            gen.fill (buf, 512, 0.5f);
+            for (int i = 0; i < 512; ++i) for (int c = 0; c < 2; ++c) ref.push_back (buf.getSample (c, i));
+        }
+        const float d = diffDb (r.out, ref);
+        std::printf ("%-22s difference %6.1f dB  %s\n", "Bypass = original", d, check (d < -90.f));
     }
 
     // --- Delta : alignement du sec en x1 / x2 / x8

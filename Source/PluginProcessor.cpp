@@ -14,6 +14,10 @@ namespace
     inline double toLufs (double ms)   { return ms > 1e-12 ? -0.691 + 10.0 * std::log10 (ms) : -100.0; }
 
     constexpr float amTargets[3] = { -14.f, -9.f, -7.f };
+
+    // Constantes calees par mesure de MONSTER (banc Tools/Probe.cpp)
+    constexpr double mouthC2 = 1.41, mouthK = 3.4, mouthLim = 0.6;
+    constexpr double maskA = 5.56, maskG = 2.40;
 }
 
 //==============================================================================
@@ -73,6 +77,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     choice ("os",    "Oversampling", { "x1", "x2", "x4", "x8", "x16" }, 1);
     toggle ("noLatency", "No Latency", false);
     choice ("amTarget", "Auto Master Target", { "STREAM", "CLUB", "LOUD" }, 1);
+    toggle ("bypass", "Bypass",      false);
+    pct ("punch",    "Punch",        100.f, 0.f);
+    pct ("ott",      "OTT Depth",    100.f, 0.f);
+    pct ("ottTime",  "OTT Time",     100.f, 50.f);
+    toggle ("body",  "Body",         true);
 
     return { v.begin(), v.end() };
 }
@@ -94,6 +103,8 @@ RavennProcessor::RavennProcessor()
     p.width = get ("width");       p.monoBass = get ("monoBass");   p.monoFreq = get ("monoFreq");
     p.mix = get ("mix");           p.delta = get ("delta");         p.autoGain = get ("autoGain");
     p.os = get ("os");             p.noLatency = get ("noLatency"); p.amTarget = get ("amTarget");
+    p.bypass = get ("bypass");     p.punch = get ("punch");         p.ott = get ("ott");
+    p.ottTime = get ("ottTime");   p.body = get ("body");
 
     for (int i = 0; i < scopeSize; ++i) { scopePeak[(size_t) i].store (0.f); scopeGr[(size_t) i].store (0.f); }
 
@@ -156,8 +167,15 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     scopeCount = 0;
     scopeAcc = 0.f;
 
-    for (auto* r : { &rIn, &rWidth, &rMix, &rOut, &rMouth, &rMask, &rDepth, &rAnalog, &rClip })
+    for (auto* r : { &rIn, &rWidth, &rMix, &rOut, &rMouth, &rMask, &rDepth, &rAnalog, &rClip,
+                     &rBody, &rPunch, &rOtt, &rBypass })
         r->snap();
+
+    punchFx.prepare (sampleRate);
+    lastOttTime = p.ottTime->load();
+    ottFx.prepare (sampleRate, lastOttTime * 0.01);
+    std::fill (specIn.begin(), specIn.end(), 0.f);
+    std::fill (specOut.begin(), specOut.end(), 0.f);
 
     currentOs = -1;
     lastEqPos = lastClipBand = -1;
@@ -181,11 +199,10 @@ void RavennProcessor::resetFilters()
 {
     for (auto& f : eq) f.reset();
     sideHP.reset();
-    for (auto& f : mouthLP) f.reset();
-    for (auto& f : mouthTone) f.reset();
-    for (auto& f : mouthEnv) f.reset();
+    for (auto& f : bodyPeak) f.reset();
+    punchFx.reset();
+    ottFx.reset();
     maskF.reset();
-    maskEnv.reset();
     depthLP.reset(); depthHarmLP.reset(); depthPeak.reset(); depthDC.reset();
     for (auto& f : analogBump) f.reset();
     for (auto& f : analogShelf) f.reset();
@@ -273,22 +290,28 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
     for (auto& f : eq) f.set (baseRate, p.tilt->load(), p.lowShelf->load(), p.air->load());
     sideHP.setHighpass (baseRate, p.monoFreq->load());
 
-    static constexpr double maskLo[4] = { 70.0, 600.0, 1500.0, 0.0 };
+    // Bandes du Mask mesurees sur MONSTER (FULL laisse le sub tranquille)
+    static constexpr double maskLo[4] = { 70.0, 600.0, 1500.0, 130.0 };
     static constexpr double maskHi[4] = { 1100.0, 2600.0, 0.0, 0.0 };
     static constexpr double clipLo[4] = { 0.0, 0.0, 200.0, 4000.0 };
     static constexpr double clipHi[4] = { 0.0, 200.0, 4000.0, 0.0 };
 
     maskF.set (osRate, maskLo[maskBand], maskHi[maskBand]);
-    maskEnv.set (osRate, 4.0, 60.0);
+    for (auto& f : bodyPeak) f.peak (osRate, 60.0, 0.6, 3.6);
+    if (p.ottTime->load() != lastOttTime)
+    {
+        lastOttTime = p.ottTime->load();
+        ottFx.setTime (baseRate, lastOttTime * 0.01);
+    }
+    const bool bypass = p.bypass->load() > 0.5f;
+    const double body = p.body->load() > 0.5f ? 1.0 : 0.0;
+    const double punch = p.punch->load() * 0.01, ott = p.ott->load() * 0.01;
     depthLP.setLowpass (osRate, 110.0);
     depthHarmLP.lowpass (osRate, 320.0, 0.707);
     depthDC.set (osRate, 35.0);
     depthPeak.peak (osRate, 55.0, 0.9, depth * 6.0);
     for (int c = 0; c < 2; ++c)
     {
-        mouthLP[(size_t) c].setLowpass (osRate, 300.0);
-        mouthTone[(size_t) c].lowpass (osRate, 3500.0, 0.707);
-        mouthEnv[(size_t) c].set (osRate, 8.0, 90.0);
         analogBump[(size_t) c].peak (osRate, 35.0, 0.7, analog * 1.2);
         analogShelf[(size_t) c].highShelf (osRate, 14000.0, 0.7, -analog * 1.5);
         clipF[(size_t) c].set (osRate, clipLo[clipBand], clipHi[clipBand]);
@@ -346,6 +369,17 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
         rWidth.finish();
     }
 
+    // ---------- 3b. OTT puis PUNCH (avant la saturation : le clipper rattrape les attaques)
+    rOtt.set (ott, n); rPunch.set (punch, n);
+    for (int i = 0; i < n; ++i)
+    {
+        double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+        ottFx.process (x, nch, rOtt.next());
+        punchFx.process (x, nch, rPunch.next());
+        for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+    }
+    rOtt.finish(); rPunch.finish();
+
     // ---------- 4. Etages non lineaires (sur-echantillonnes, sauf No Latency)
     juce::dsp::AudioBlock<float> block (ch, (size_t) nch, (size_t) n);
     auto& os = *oversamplers[(size_t) currentOs];
@@ -353,7 +387,7 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
     const int on = (int) up.getNumSamples();
     float* u[2] = { up.getChannelPointer (0), nch > 1 ? up.getChannelPointer (1) : nullptr };
 
-    rMouth.set (mouth, on); rMask.set (mask, on); rDepth.set (depth, on);
+    rMouth.set (mouth, on); rMask.set (mask, on); rDepth.set (depth, on); rBody.set (body, on);
     rAnalog.set (analog, on); rClip.set (dbToGain (clipEffDb), on);
 
     double grPre = 0, grPost = 0;
@@ -365,30 +399,23 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
 
         double x[2] = { u[0][i], nch > 1 ? (double) u[1][i] : 0.0 };
 
-        // THE MOUTH : les graves (< 300 Hz) passent dans une distorsion
-        // asymetrique a niveau constant. A 100 % ils sont presque carres.
-        const double mAmt = 0.10 + 0.90 * mo;
-        const double mDrive = 1.2 + 11.0 * mo * mo + 2.0 * mo;
+        // THE MOUTH (cale sur MONSTER) : harmoniques paires, large bande
+        // puis BODY : la couleur de base de MONSTER (bosse a 60 Hz, Side +1 dB)
+        const double bo = rBody.next();
         for (int c = 0; c < nch; ++c)
         {
-            const double b = mouthLP[(size_t) c].process (x[c]);
-            const double env = mouthEnv[(size_t) c].process (b) * 1.41421356;
-            const double wet = gdsp::levelSat (b, env, mDrive, 0.35 * mo + 0.1);
-            const double diff = mouthTone[(size_t) c].process (wet * (1.0 + 0.35 * mo) - b);
-            x[c] += mAmt * diff;
+            const double v = gdsp::shape::mouth (x[c], mo, mouthC2, mouthK, mouthLim);
+            x[c] = v + bo * (bodyPeak[(size_t) c].process (v) - v);
         }
 
         if (nch == 2)
         {
-            double M = (x[0] + x[1]) * 0.5, S = (x[0] - x[1]) * 0.5;
+            double M = (x[0] + x[1]) * 0.5, S = (x[0] - x[1]) * 0.5 * (1.0 + 0.122 * bo);
 
-            // THE MASK : saturation a niveau constant du Side dans la bande,
-            // + remontee du Side (jusqu'a +7 dB) : ca s'ouvre vraiment.
-            const double b = maskF.process (S);
-            const double env = maskEnv.process (b) * 1.41421356;
-            const double d = 1.2 + 9.0 * ma;
-            const double wet = gdsp::levelSat (b, env, d, 0.0) * (1.0 + 1.3 * ma);
-            S += ma * (wet - b);
+            // THE MASK (cale sur MONSTER) : Side seul, saturation impaire + gain
+            double rest = 0;
+            const double b = maskF.process (S, rest, M);
+            S = rest + b + ma * (gdsp::shape::maskSat (b, maskA, maskG) - b);
 
             M = applyDepth (M, de);
 
@@ -441,7 +468,7 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
             u[c][i] = (float) v;
         }
     }
-    rMouth.finish(); rMask.finish(); rDepth.finish(); rAnalog.finish(); rClip.finish();
+    rMouth.finish(); rMask.finish(); rDepth.finish(); rAnalog.finish(); rClip.finish(); rBody.finish();
 
     os.processSamplesDown (block);
 
@@ -467,6 +494,8 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
     const double agA = 1.0 - std::exp (-1.0 / (0.4 * baseRate));
     rMix.set (mix, n);
     rOut.set (dbToGain (outDb), n);
+    rBypass.set (bypass ? 1.0 : 0.0, n);
+    int sw = specWrite.load (std::memory_order_relaxed);
 
     for (int i = 0; i < n; ++i)
     {
@@ -484,16 +513,21 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
             target = (wetMs > 1e-9 && dryMs > 1e-9) ? juce::jlimit (0.0625, 16.0, std::sqrt (dryMs / wetMs)) : agcGain;
         agcGain += agA * (target - agcGain);
 
-        const double mx = rMix.next(), og = rOut.next();
+        const double mx = rMix.next(), og = rOut.next(), bp = rBypass.next();
         float peak = 0.f;
+        double monoIn = 0, monoOut = 0;
         for (int c = 0; c < nch; ++c)
         {
             const double d = dryBuffer.getSample (c, i);
             const double w = ch[c][i] * agcGain;
-            const double o = delta ? (w - d) : d + mx * (w - d);
-            ch[c][i] = (float) (o * og);
+            const double o = (delta ? (w - d) : d + mx * (w - d)) * og;
+            ch[c][i] = (float) (o + bp * (d - o));     // BYPASS : fondu vers le signal d'origine
             peak = std::max (peak, std::abs (ch[c][i]));
+            monoIn += d; monoOut += ch[c][i];
         }
+        specIn[(size_t) sw] = (float) (monoIn / nch);
+        specOut[(size_t) sw] = (float) (monoOut / nch);
+        sw = (sw + 1) & (specSize - 1);
 
         // Oscilloscope : une tranche toutes les 10 ms
         scopeAcc = std::max (scopeAcc, peak);
@@ -507,7 +541,8 @@ void RavennProcessor::processChunk (juce::AudioBuffer<float>& buf, int nch, int 
             scopeCount = 0;
         }
     }
-    rMix.finish(); rOut.finish();
+    rMix.finish(); rOut.finish(); rBypass.finish();
+    specWrite.store (sw, std::memory_order_release);
     autoGainDb.store ((float) (20.0 * std::log10 (agcGain)));
 
     // ---------- 8. Mesures de sortie
@@ -736,6 +771,12 @@ void RavennProcessor::applyAutoMaster()
     const double rest = G - in - clip;
     if (std::abs (rest) > 0.05) in = (float) juce::jlimit (-15.0, 15.0, in + rest);
 
+    // Mix deja ecrase (peu de dynamique) : un peu de Punch pour rendre les attaques
+    const float punch = plr < 8.0 ? 25.f : (plr < 11.0 ? 12.f : 0.f);
+    setParamValue ("bypass", 0.f);
+    setParamValue ("body", 1.f);
+    setParamValue ("ott", 0.f);
+    setParamValue ("punch", punch);
     setParamValue ("link", 0.f);
     setParamValue ("delta", 0.f);
     setParamValue ("autoGain", 0.f);

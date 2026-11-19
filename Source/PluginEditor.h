@@ -11,19 +11,20 @@ namespace ui
                                .withKerningFactor (kerning));
     }
 
-    const juce::Colour bg      { 0xff06070b };
-    const juce::Colour panel   { 0xff0d0f17 };
-    const juce::Colour edge    { 0xff22273a };
-    const juce::Colour track   { 0xff171b28 };
-    const juce::Colour text    { 0xffeef0f6 };
-    const juce::Colour dim     { 0xff7c849a };
-    const juce::Colour violet  { 0xff8b5cf6 };
-    const juce::Colour cyan    { 0xff22d3ee };
-    const juce::Colour pink    { 0xfff472b6 };
-    const juce::Colour red     { 0xffff3b5c };
-    const juce::Colour amber   { 0xfffbbf24 };
-    const juce::Colour green   { 0xff34d399 };
-    const juce::Colour blue    { 0xff60a5fa };
+    // Palette sombre : noir, blanc, nuances de bleu (acier / glace / nuit)
+    const juce::Colour bg      { 0xff030406 };
+    const juce::Colour panel   { 0xff07090d };
+    const juce::Colour edge    { 0xff1d2733 };
+    const juce::Colour track   { 0xff121821 };
+    const juce::Colour text    { 0xffe9eef3 };
+    const juce::Colour dim     { 0xff738191 };
+    const juce::Colour violet  { 0xff3d7bff };   // bleu electrique
+    const juce::Colour cyan    { 0xff9ccfff };   // glace
+    const juce::Colour pink    { 0xff6f93c4 };   // acier bleute
+    const juce::Colour red     { 0xfff4f7fb };   // blanc os (danger / GR)
+    const juce::Colour amber   { 0xffc9d6e3 };   // argent
+    const juce::Colour green   { 0xff5fb4ff };   // bleu clair
+    const juce::Colour blue    { 0xff2f5fd0 };   // bleu nuit
 }
 
 //==============================================================================
@@ -98,6 +99,22 @@ private:
     RavennProcessor& proc;
 };
 
+// Analyseur de spectre : entree (trait fin) et sortie (rempli)
+class Spectrum : public juce::Component, private juce::Timer
+{
+public:
+    explicit Spectrum (RavennProcessor& p);
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override;
+    void analyse (const std::array<float, RavennProcessor::specSize>& src, int w0, std::vector<float>& out);
+    RavennProcessor& proc;
+    static constexpr int order = 12, fftSize = 1 << order;
+    juce::dsp::FFT fft { order };
+    std::vector<float> work, window, dbIn, dbOut;
+};
+
 class MeterColumn : public juce::Component, private juce::Timer
 {
 public:
@@ -158,22 +175,25 @@ private:
     RavennLookAndFeel lnf;
     juce::TooltipWindow tooltips { this, 600 };
 
-    NeonKnob mouth, mask, depth, analog, in, clip, out, tilt, lowShelf, air, width, monoFreq, mix;
+    NeonKnob mouth, mask, depth, analog, in, clip, out, tilt, lowShelf, air, width, monoFreq, mix,
+             ott, ottTime, punch;
     Segmented maskBand, clipShape, clipBand, eqPos, os;
-    Pill link, monoBass, delta, autoGain, noLatency;
+    Pill link, monoBass, delta, autoGain, noLatency, bypass, body;
 
     juce::ComboBox presetBox;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, saveBtn, deleteBtn, abBtn, copyBtn;
 
+    Spectrum spectrum;
     Scope scope;
     MeterColumn meters;
     AutoMasterPanel autoMaster;
 
-    std::array<Panel, 6> panels;
+    std::array<Panel, 7> panels;
     juce::Rectangle<int> header, logoArea;
-    juce::Image background;
+    juce::Image background, ravenImg, coverImg;
     juce::String shownPreset;
     int shownAB = -1;
+    bool shownBypass = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RavennEditor)
 };

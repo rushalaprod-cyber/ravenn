@@ -24,6 +24,10 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
         { u8 ("Grosse Bouche"),     { { "mouth", 80.0f }, { "depth", 25.0f }, { "clip", 3.0f }, { "clipShape", 1.0f } } },
         { u8 ("Side Explosif"),     { { "mask", 70.0f }, { "maskBand", 2.0f }, { "width", 120.0f }, { "clip", 2.0f } } },
         { u8 ("Live Sans Latence"), { { "noLatency", 1.0f }, { "clip", 3.0f }, { "clipShape", 1.0f }, { "mouth", 20.0f } } },
+        { u8 ("Punch Kick"),        { { "punch", 45.0f }, { "mouth", 30.0f }, { "clip", 4.0f }, { "clipShape", 1.0f } } },
+        { u8 ("OTT Écrasé"),        { { "ott", 45.0f }, { "ottTime", 40.0f }, { "punch", 20.0f }, { "clip", 3.0f },
+                                      { "clipShape", 1.0f }, { "mask", 15.0f }, { "maskBand", 2.0f } } },
+        { u8 ("Monster Brut"),      { { "in", 3.0f }, { "mouth", 50.0f }, { "mask", 25.0f }, { "maskBand", 1.0f } } },
     };
     current = factory.front().name;
 }

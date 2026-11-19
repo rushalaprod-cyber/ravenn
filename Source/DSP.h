@@ -224,7 +224,177 @@ namespace shape
         const double slope = 1.0 - tb * tb;
         return (std::tanh (drive * x + bias) - tb) / (drive * slope);
     }
+
+    // THE MOUTH (cale sur des mesures de MONSTER) : distorsion statique a
+    // harmoniques paires, large bande. H2 ~ -21 dB pour un sinus a -18 dBFS
+    // a 100 %, H3 ~ 14 dB sous H2, et le grain monte avec le niveau.
+    inline double mouth (double x, double amount, double c2, double k, double lim) noexcept
+    {
+        if (amount <= 0.0) return x;
+        const double raw = c2 * x * x / std::max (0.25, 1.0 - k * x);
+        return (x + amount * lim * std::tanh (raw / lim)) * (1.0 - 0.08 * amount);
+    }
+
+    // THE MASK (cale sur MONSTER) : saturation impaire statique + gain du Side.
+    // Petit signal : gain G ; sinus Side a -18 dBFS : H3 ~ -26 dB a 100 %.
+    inline double maskSat (double b, double a, double G) noexcept
+    {
+        return G * std::tanh (a * b) / a;
+    }
 }
+
+//==============================================================================
+// Decoupe 3 bandes Linkwitz-Riley pour THE MASK (comme MONSTER : pas de creux
+// aux frontieres). Le Mid passe par les memes passe-tout pour rester en phase.
+struct MaskSplit
+{
+    LR4 sLoLP, sLoHP, sHiLP, sHiHP, sApLP, sApHP;   // Side
+    LR4 mLoLP, mLoHP, mHiLP, mHiHP;                 // Mid (passe-tout)
+    double lo = 0, hi = 0;
+
+    void set (double fs, double loHz, double hiHz) noexcept
+    {
+        lo = loHz; hi = hiHz;
+        if (lo > 0) for (auto* f : { &sLoLP, &mLoLP }) f->setLowpass (fs, lo);
+        if (lo > 0) for (auto* f : { &sLoHP, &mLoHP }) f->setHighpass (fs, lo);
+        if (hi > 0) for (auto* f : { &sHiLP, &sApLP, &mHiLP }) f->setLowpass (fs, hi);
+        if (hi > 0) for (auto* f : { &sHiHP, &sApHP, &mHiHP }) f->setHighpass (fs, hi);
+    }
+    void reset() noexcept
+    {
+        for (auto* f : { &sLoLP, &sLoHP, &sHiLP, &sHiHP, &sApLP, &sApHP, &mLoLP, &mLoHP, &mHiLP, &mHiHP })
+            f->reset();
+    }
+
+    // Renvoie la bande ; 'rest' = tout le reste du Side ; M est mis en phase.
+    inline double process (double S, double& rest, double& M) noexcept
+    {
+        double band = S, below = 0, above = 0;
+        if (lo > 0) { below = sLoLP.process (band); band = sLoHP.process (band); M = mLoLP.process (M) + mLoHP.process (M); }
+        if (hi > 0)
+        {
+            above = sHiHP.process (band); band = sHiLP.process (band);
+            below = sApLP.process (below) + sApHP.process (below);
+            M = mHiLP.process (M) + mHiHP.process (M);
+        }
+        rest = below + above;
+        return band;
+    }
+};
+
+//==============================================================================
+// PUNCH : renforce les attaques (kick, snare) en suivant l'ecart entre une
+// enveloppe rapide et une lente. Plus marque dans le grave. Gain unitaire
+// exact quand amount = 0 (aucune coloration).
+struct Punch
+{
+    double fast = 0, slow = 0, g = 1.0;
+    double fA = 0, fR = 0, sA = 0, sR = 0, gS = 0;
+    std::array<LR4, 2> low;
+
+    void prepare (double fs) noexcept
+    {
+        auto c = [fs] (double ms) { return 1.0 - std::exp (-1.0 / (ms * 0.001 * fs)); };
+        fA = c (0.3); fR = c (20.0); sA = c (30.0); sR = c (150.0); gS = c (1.5);
+        for (auto& f : low) f.setLowpass (fs, 160.0);
+    }
+    void reset() noexcept { fast = slow = 0; g = 1.0; for (auto& f : low) f.reset(); }
+
+    // ch : 1 ou 2 canaux, traite sur place
+    void process (double* x, int nch, double amount) noexcept
+    {
+        double det = 0;
+        for (int c = 0; c < nch; ++c) det = std::max (det, std::abs (x[c]));
+        fast += (det > fast ? fA : fR) * (det - fast);
+        slow += (det > slow ? sA : sR) * (det - slow);
+
+        double target = 1.0;
+        if (slow > 1.0e-4)
+        {
+            const double r = fast / slow;
+            const double gDb = r > 1.0 ? std::min (10.0, amount * 9.0 * std::log2 (r)) : 0.0;
+            target = std::pow (10.0, gDb / 20.0);
+        }
+        g += gS * (target - g);
+
+        const double gLow = 1.0 + (g - 1.0) * 1.35, gHigh = 1.0 + (g - 1.0) * 0.65;
+        for (int c = 0; c < nch; ++c)
+        {
+            const double lo = low[(size_t) c].process (x[c]);
+            x[c] = x[c] + (gLow - 1.0) * lo + (gHigh - 1.0) * (x[c] - lo);
+        }
+    }
+};
+
+//==============================================================================
+// OTT : compression multibande haut + bas (3 bandes, 88 Hz / 2,5 kHz).
+// Les bandes se resomment exactement : DEPTH = 0 rend le signal intact.
+// L'expansion vers le haut s'efface sous -70 dB : pas de souffle remonte.
+struct OTT
+{
+    static constexpr int nb = 3;
+    std::array<std::array<LR4, 2>, 2> split;      // [crossover][canal]
+    std::array<double, nb> env {}, gDb {};
+    double att = 0, rel = 0, gS = 0;
+
+    void prepare (double fs, double timeAmt) noexcept
+    {
+        for (int c = 0; c < 2; ++c) { split[0][(size_t) c].setLowpass (fs, 88.0); split[1][(size_t) c].setLowpass (fs, 2500.0); }
+        setTime (fs, timeAmt);
+    }
+    void setTime (double fs, double timeAmt) noexcept
+    {
+        const double tf = std::pow (10.0, (timeAmt - 0.5) * 1.4);   // x0.2 .. x5
+        auto c = [fs] (double ms) { return 1.0 - std::exp (-1.0 / (ms * 0.001 * fs)); };
+        att = c (5.0 * tf); rel = c (90.0 * tf); gS = c (2.0);
+    }
+    void reset() noexcept
+    {
+        for (auto& s : split) for (auto& f : s) f.reset();
+        env.fill (0); gDb.fill (0);
+    }
+
+    void process (double* x, int nch, double depth) noexcept
+    {
+        double band[nb][2] {};
+        for (int c = 0; c < nch; ++c)
+        {
+            const double lo = split[0][(size_t) c].process (x[c]);
+            const double rest = x[c] - lo;
+            const double mid = split[1][(size_t) c].process (rest);
+            band[0][c] = lo; band[1][c] = mid; band[2][c] = rest - mid;
+        }
+
+        for (int b = 0; b < nb; ++b)
+        {
+            double p = 0;
+            for (int c = 0; c < nch; ++c) p = std::max (p, band[b][c] * band[b][c]);
+            env[(size_t) b] += (p > env[(size_t) b] ? att : rel) * (p - env[(size_t) b]);
+            const double L = 10.0 * std::log10 (env[(size_t) b] + 1.0e-12);
+
+            constexpr double thrDown = -18.0, thrUp = -36.0;
+            double t = 0;
+            if (L > thrDown)      t = -(L - thrDown) * (1.0 - 1.0 / 4.0);
+            else if (L < thrUp)
+            {
+                const double fade = std::clamp ((L + 75.0) / 10.0, 0.0, 1.0);
+                t = std::min (18.0, (thrUp - L) * (1.0 - 1.0 / 3.0)) * fade;
+            }
+            gDb[(size_t) b] += gS * (t - gDb[(size_t) b]);
+        }
+
+        for (int c = 0; c < nch; ++c)
+        {
+            double y = 0;
+            for (int b = 0; b < nb; ++b)
+            {
+                const double g = std::pow (10.0, (gDb[(size_t) b] + 6.0) / 20.0);   // +6 dB de make-up
+                y += band[b][c] * (1.0 + depth * (g - 1.0));
+            }
+            x[c] = y;
+        }
+    }
+};
 
 //==============================================================================
 // Mesure de loudness ITU-R BS.1770 / EBU R128 : momentane (400 ms),

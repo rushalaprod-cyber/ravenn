@@ -6,7 +6,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
 
-project(ravenn VERSION 1.0.0)
+project(ravenn VERSION 1.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,9 @@ juce_add_plugin(ravenn
     AU_MAIN_TYPE kAudioUnitType_Effect
     COPY_PLUGIN_AFTER_BUILD FALSE)
 
+# Images de l'interface (corbeau du tatouage, cover)
+juce_add_binary_data(ravennAssets SOURCES assets/raven.png assets/cover.jpg)
+
 set(RAVENN_SOURCES
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
@@ -60,6 +63,7 @@ endif()
 
 target_link_libraries(ravenn
     PRIVATE
+        ravennAssets
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
@@ -78,6 +82,22 @@ if(RAVENN_TESTS)
         target_compile_options(ravennTest PRIVATE /utf-8)
     endif()
     target_link_libraries(ravennTest PRIVATE
+        ravennAssets
+        juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags)
+endif()
+
+# Banc de mesure boite noire (charge un VST3 et mesure sa reponse)
+option(RAVENN_PROBE "Construire le banc de mesure" OFF)
+if(RAVENN_PROBE)
+    juce_add_console_app(ravennProbe PRODUCT_NAME "ravennProbe")
+    target_sources(ravennProbe PRIVATE Tools/Probe.cpp)
+    target_compile_definitions(ravennProbe PRIVATE
+        JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    if(MSVC)
+        target_compile_options(ravennProbe PRIVATE /utf-8)
+    endif()
+    target_link_libraries(ravennProbe PRIVATE
         juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags)
 endif()

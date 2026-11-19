@@ -35,6 +35,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    juce::AudioProcessorParameter* getBypassParameter() const override { return apvts.getParameter ("bypass"); }
 
     //==============================================================================
     juce::AudioProcessorValueTreeState apvts;
@@ -53,6 +54,11 @@ public:
     static constexpr int scopeSize = 512;
     std::array<std::atomic<float>, scopeSize> scopePeak, scopeGr;
     std::atomic<int> scopeWrite { 0 };
+
+    // Analyseur de spectre : derniers echantillons (mono) avant et apres traitement
+    static constexpr int specSize = 8192;
+    std::array<float, specSize> specIn {}, specOut {};
+    std::atomic<int> specWrite { 0 };
 
     void requestMeterReset() { resetMetersFlag = true; }
 
@@ -94,7 +100,8 @@ private:
                            *clip {}, *clipShape {}, *clipBand {}, *link {}, *out {},
                            *tilt {}, *lowShelf {}, *air {}, *eqPos {},
                            *width {}, *monoBass {}, *monoFreq {},
-                           *mix {}, *delta {}, *autoGain {}, *os {}, *noLatency {}, *amTarget {};
+                           *mix {}, *delta {}, *autoGain {}, *os {}, *noLatency {}, *amTarget {},
+                           *bypass {}, *punch {}, *ott {}, *ottTime {}, *body {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -108,11 +115,10 @@ private:
     // ---- Filtres
     std::array<gdsp::ColorEQ, 2> eq;
     gdsp::LR4 sideHP;
-    std::array<gdsp::LR4, 2> mouthLP;
-    std::array<gdsp::Biquad, 2> mouthTone;
-    std::array<gdsp::EnvFollower, 2> mouthEnv;
-    gdsp::BandFilter maskF;
-    gdsp::EnvFollower maskEnv;
+    std::array<gdsp::Biquad, 2> bodyPeak;
+    gdsp::Punch punchFx;
+    gdsp::OTT ottFx;
+    gdsp::MaskSplit maskF;
     gdsp::LR4 depthLP;
     gdsp::Biquad depthHarmLP, depthPeak;
     gdsp::DCBlock depthDC;
@@ -120,7 +126,8 @@ private:
     std::array<gdsp::BandFilter, 2> clipF;
     std::array<gdsp::DCBlock, 2> dc1, dc2;
 
-    gdsp::Ramp rIn, rWidth, rMix, rOut, rMouth, rMask, rDepth, rAnalog, rClip;
+    gdsp::Ramp rIn, rWidth, rMix, rOut, rMouth, rMask, rDepth, rAnalog, rClip, rBody, rPunch, rOtt, rBypass;
+    float lastOttTime = -1.f;
 
     double wetMs = 0, dryMs = 0, agcGain = 1.0;
     float tpMax = 0.f;
