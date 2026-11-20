@@ -47,6 +47,13 @@ struct Biquad
         set ((1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + al, -2 * c, 1 - al);
     }
 
+    // passe-bande, 0 dB au centre
+    void bandpass (double fs, double f, double q) noexcept
+    {
+        const double w = 2 * pi * clampF (fs, f) / fs, c = std::cos (w), al = std::sin (w) / (2 * q);
+        set (al, 0, -al, 1 + al, -2 * c, 1 - al);
+    }
+
     void peak (double fs, double f, double q, double gainDb) noexcept
     {
         const double A = std::pow (10.0, gainDb / 40.0);
@@ -92,18 +99,52 @@ struct LR4
     void reset() noexcept { a.reset(); b.reset(); }
 };
 
+// Linkwitz-Riley a pente reglable : 0 = 12 dB/oct (LR2), 1 = 24 (LR4), 2 = 48 (LR8).
+// Passe-bas + passe-haut a la meme frequence se somment en passe-tout
+// (LR2 : le passe-haut est inverse pour cela, voir hpSign).
+struct LRX
+{
+    Biquad s[4];
+    int n = 2, slope = 1;
+    double hpSign = 1.0, lastF = -1, lastFs = -1;
+    bool lastHigh = false;
+    void configure (double fs, double f, int sl, bool high) noexcept
+    {
+        sl = std::clamp (sl, 0, 2);
+        if (sl == slope && f == lastF && fs == lastFs && high == lastHigh) return;
+        if (sl != slope) { for (auto& b : s) b.reset(); slope = sl; }
+        lastF = f; lastFs = fs; lastHigh = high;
+        static constexpr double q8[4] = { 0.5411961001461970, 1.3065629648763766, 0.5411961001461970, 1.3065629648763766 };
+        n = sl == 0 ? 1 : (sl == 1 ? 2 : 4);
+        hpSign = (high && sl == 0) ? -1.0 : 1.0;
+        for (int k = 0; k < n; ++k)
+        {
+            const double q = sl == 0 ? 0.5 : (sl == 1 ? 0.7071067811865476 : q8[k]);
+            if (high) s[k].highpass (fs, f, q); else s[k].lowpass (fs, f, q);
+        }
+    }
+    void setLowpass (double fs, double f, int sl = 1) noexcept  { configure (fs, f, sl, false); }
+    void setHighpass (double fs, double f, int sl = 1) noexcept { configure (fs, f, sl, true); }
+    inline double process (double x) noexcept
+    {
+        for (int k = 0; k < n; ++k) x = s[k].process (x);
+        return x * hpSign;
+    }
+    void reset() noexcept { for (auto& b : s) b.reset(); }
+};
+
 // Filtre de bande : passe-haut (si lowHz > 0) puis passe-bas (si highHz > 0).
 struct BandFilter
 {
-    LR4 hp, lp;
+    LRX hp, lp;
     bool useHP = false, useLP = false;
 
-    void set (double fs, double lowHz, double highHz) noexcept
+    void set (double fs, double lowHz, double highHz, int slope = 1) noexcept
     {
         useHP = lowHz > 0;
         useLP = highHz > 0;
-        if (useHP) hp.setHighpass (fs, lowHz);
-        if (useLP) lp.setLowpass (fs, highHz);
+        if (useHP) hp.setHighpass (fs, lowHz, slope);
+        if (useLP) lp.setLowpass (fs, highHz, slope);
     }
 
     inline double process (double x) noexcept

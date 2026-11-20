@@ -135,7 +135,7 @@ private:
     std::vector<float> work, window, dbIn, dbOut;
     float viewTop = 0.f;
     bool inSilent = true, outSilent = true;
-    juce::Image backdrop;
+    juce::Image backdrop, coverSrc;   // pas d'Image statique : detruite apres Direct2D = crash a la fermeture
     int dragKind = 0, dragIdx = -1;
     float xOfF (float f) const;
     float fOfX (float x) const;
@@ -153,6 +153,7 @@ private:
     juce::Rectangle<float> plotArea;
 public:
     bool showBands = false;   // onglet MULTIBAND : edition directe sur le spectre
+    const std::array<float, 4>* mbGr = nullptr;   // reduction lissee, fournie par la page MULTIBAND
     int selectedBand = -1;
 };
 
@@ -233,6 +234,7 @@ class MultibandPage : public juce::Component, private juce::Timer
 {
 public:
     explicit MultibandPage (RavennProcessor& p);
+    Segmented slope;   // pente des crossovers
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -252,8 +254,8 @@ private:
     std::array<juce::Rectangle<int>, 4> meterArea;
     std::array<juce::Rectangle<int>, 2> dynArea;
     juce::Rectangle<int> mbPanel, dynPanel;
-    std::array<float, 4> grDisp {};
 public:
+    std::array<float, 4> grDisp {};
     const int* selBand = nullptr;
     int lastSel = -2;
 };
@@ -295,6 +297,29 @@ private:
     void timerCallback() override;
     RavennProcessor& proc;
     float needle = 0.f, hold = 0.f; int holdT = 0;
+};
+
+// Waveform du clipper : avant (acier), apres (glace), crete coupee (blanc), plafond 0 dBFS
+class ClipWave : public juce::Component, private juce::Timer
+{
+public:
+    explicit ClipWave (RavennProcessor& p) : proc (p) { startTimerHz (40); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    RavennProcessor& proc;
+};
+
+// THE MASK : ouverture du Side en cours + garde mono
+class MaskMeter : public juce::Component, private juce::Timer
+{
+public:
+    explicit MaskMeter (RavennProcessor& p) : proc (p) { startTimerHz (20); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { lift += 0.3f * (proc.maskLiftDb.load() - lift); repaint(); }
+    RavennProcessor& proc;
+    float lift = 0.f;
 };
 
 // VU a aiguille du GLUE
@@ -467,6 +492,20 @@ private:
     ChangesOverlay changes;
     juce::TextButton matchRefBtn, changesRefBtn;
     juce::TextButton presetNameBtn;
+
+    // ---- 1.8
+    NeonKnob imgX1, imgX2, kick;
+    Segmented satSlope, clipSlope, imgSlope;
+    Pill glueAuto, dsOn;
+    juce::TextButton autoInBtn, dsLearnBtn, voiceResetBtn, voiceSaveBtn;
+    ClipWave clipWave;
+    MaskMeter maskMeter;
+    struct UserVoice { juce::String name; float f, q, g, focus; };
+    std::vector<UserVoice> userVoices;
+    void loadUserVoices();
+    void saveUserVoices();
+    void rebuildVoiceBox();
+    int lastAiState = -1, lastDsLearn = -1;
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;

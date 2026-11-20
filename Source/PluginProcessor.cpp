@@ -99,6 +99,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
         v.push_back (std::make_unique<AudioParameterBool> (ParameterID { id, 1 }, name, def));
     };
 
+    // vitesses : on affiche SLOW / FAST plutot qu'un pourcentage trompeur
+    auto speedParam = [&] (const char* id, const char* name, float def, bool fastFirst)
+    {
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, NormalisableRange<float> (0.f, 100.f, 0.1f), def,
+            AudioParameterFloatAttributes().withStringFromValueFunction ([fastFirst] (float x, int)
+            {
+                const float s = fastFirst ? 100.f - x : x;        // s : 0 = lent, 100 = rapide
+                const char* w = s < 15.f ? "VERY SLOW" : s < 40.f ? "SLOW" : s < 60.f ? "MEDIUM" : s < 85.f ? "FAST" : "VERY FAST";
+                return String (w);
+            })));
+    };
     dB  ("in",       "In",           -15.f, 15.f, 0.f);
     pct ("mouth",    "Mouth",        100.f, 0.f);
     pct ("mask",     "Mask",         100.f, 0.f);
@@ -129,8 +140,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     toggle ("bypass", "Bypass",      false);
     pct ("punch",    "Punch",        100.f, 0.f);
     pct ("ott",      "OTT Depth",    100.f, 0.f);
-    pct ("ottTime",  "OTT Time",     100.f, 50.f);
-    toggle ("body",  "Body",         true);
+    speedParam ("ottTime",  "OTT Time",     50.f, true);
+    toggle ("body",  "Body",         false);
 
     // 1.2 : dynamics 3 bandes
     hz  ("ottXLo",   "OTT Low/Mid",   40.f, 400.f, 120.f, 88.f);
@@ -207,7 +218,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     dB  ("dsRange", "De-esser Range", 0.f, 12.f, 0.f);
     toggle ("dsListen", "De-esser Listen", false);
     pct ("specRes",   "Resonance Tame", 100.f, 0.f);
-    pct ("specSpeed", "Spectral Speed", 100.f, 50.f);
+    speedParam ("specSpeed", "Spectral Speed", 50.f, false);
     choice ("specTarget", "Spectral Target", { "MODERN", "PINK", "REFERENCE", "WARM", "BRIGHT", "HIP-HOP / TRAP",
                                                "EDM / CLUB", "ROCK", "ACOUSTIC", "VOCAL" }, 0);
     toggle ("dsAuto", "Auto De-esser", false);
@@ -229,6 +240,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     choice ("glueHpf", "Glue Sidechain HPF", { "OFF", "60 Hz", "90 Hz", "150 Hz" }, 0);
     toggle ("specCut", "Spectral Cut Only", false);
     toggle ("mbAuto", "MB Auto Gain", false);
+
+    // 1.8
+    toggle ("glueAuto", "Glue Auto Gain", true);
+    pct ("kick", "Kick Presence", 100.f, 0.f);
+    toggle ("dsOn", "De-esser", true);
+    hz  ("imgX1", "Width Low/Mid",  60.f, 1000.f, 250.f, 250.f);
+    hz  ("imgX2", "Width Mid/High", 1000.f, 12000.f, 4000.f, 4000.f);
+    const StringArray slopes { "12 dB/oct", "24 dB/oct", "48 dB/oct" };
+    choice ("mbSlope",   "MB Crossover Slope",    slopes, 1);
+    choice ("satSlope",  "Sat Crossover Slope",   slopes, 1);
+    choice ("clipSlope", "Clip Crossover Slope",  slopes, 1);
+    choice ("imgSlope",  "Width Crossover Slope", slopes, 1);
 
     // 1.4 : compresseur multibande 4 bandes + EQ dynamique 2 bandes
     toggle ("mbOn", "Multiband", false);
@@ -348,6 +371,13 @@ RavennProcessor::RavennProcessor()
     p.depth3dHi = get ("depth3dHi"); p.depth3dQ = get ("depth3dQ");
     p.glueOn = get ("glueOn"); p.glueThr = get ("glueThr"); p.glueRatio = get ("glueRatio"); p.glueAtt = get ("glueAtt");
     p.glueRel = get ("glueRel"); p.glueMakeup = get ("glueMakeup"); p.glueMix = get ("glueMix"); p.glueHpf = get ("glueHpf");
+    p.kick = get ("kick"); p.glueAuto = get ("glueAuto"); p.dsOn = get ("dsOn"); p.imgX1 = get ("imgX1"); p.imgX2 = get ("imgX2");
+    p.mbSlope = get ("mbSlope"); p.satSlope = get ("satSlope"); p.clipSlope = get ("clipSlope"); p.imgSlope = get ("imgSlope");
+    for (int i = 0; i < clipWavSize; ++i)
+    {
+        clipWavPreHi[(size_t) i].store (0.f); clipWavPreLo[(size_t) i].store (0.f);
+        clipWavPostHi[(size_t) i].store (0.f); clipWavPostLo[(size_t) i].store (0.f);
+    }
     for (int i = 0; i < 512; ++i) { dsViewIn[(size_t) i].store (-100.f); dsViewGr[(size_t) i].store (0.f); }
     for (int i = 0; i < 512; ++i) { limViewIn[(size_t) i].store (0.f); limViewGr[(size_t) i].store (0.f); }
     for (int k = 0; k < 2; ++k)
@@ -407,6 +437,12 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     dryDelay.prepare ({ sampleRate, (juce::uint32) maxBlock, 2 });
 
     loudness.prepare (sampleRate, 2);
+    // AUTO IN a l'insertion : uniquement sur une instance neuve, potard IN encore a 0
+    if (autoInPending)
+    {
+        autoInPending = false;
+        if (std::abs (p.in->load()) < 1e-3f) startAutoIn();
+    }
     tpMax = 0.f;
     wetMs = dryMs = 0.0;
     agcGain = dlMatch = 1.0;
@@ -437,7 +473,15 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     stabilizer.prepare (sampleRate);
     mbComp.prepare (sampleRate);
     glue.prepare (sampleRate);
+    for (auto* w : { &mbWIn, &mbWOut })
+    {
+        (*w)[0].highpass (sampleRate, 120.0, 0.6);
+        (*w)[1].highShelf (sampleRate, 2000.0, 0.7, 4.0);
+        for (auto& f : *w) f.reset();
+    }
     deEsser.prepare (sampleRate);
+    dsLearner.prepare (sampleRate);
+    kickFx.prepare (sampleRate);
     spectral.prepare (sampleRate);
     lastLowCut = lastHighCut = -1.f;
     mbInMs = mbOutMs = 0; mbAg = 1.0;
@@ -531,6 +575,8 @@ void RavennProcessor::resetFilters()
     mbComp.reset();
     glue.reset();
     deEsser.reset();
+    maskOpen.reset();
+    kickFx.reset();
     for (auto& f : lowCutF) f.reset();
     for (auto& f : highCutF) f.reset();
     dynEq.reset();
@@ -684,9 +730,10 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     static constexpr double maskHi[4] = { 1100.0, 2600.0, 0.0, 0.0 };
     const double cxl = p.clipXLo->load(), cxh = juce::jmax ((double) p.clipXHi->load(), cxl * 1.5);
     const double clipLo[4] = { 0.0, 0.0, cxl, cxh };
-    static constexpr double clipHi[4] = { 0.0, 200.0, 4000.0, 0.0 };
+    const double clipHi[4] = { 0.0, cxl, cxh, 0.0 };
 
     maskF.set (osRate, maskLo[maskBand], maskHi[maskBand]);
+    maskOpen.set (osRate, maskLo[maskBand], maskHi[maskBand]);
     for (auto& f : bodyPeak) f.peak (osRate, 60.0, 0.6, 3.6);
     if (p.ottTime->load() != lastOttTime)
     {
@@ -704,11 +751,11 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         if (lc != lastLowCut)  { for (auto& f : lowCutF)  f.setHighpass (baseRate, lc); lastLowCut = lc; }
         if (hc != lastHighCut) { for (auto& f : highCutF) f.setLowpass (baseRate, juce::jmin ((double) hc, baseRate * 0.45)); lastHighCut = hc; }
     }
-    msat.setXover (osRate, p.satXLo->load(), p.satXHi->load());
+    msat.setXover (osRate, p.satXLo->load(), p.satXHi->load(), juce::jlimit (0, 2, (int) p.satSlope->load()));
     if (osRate != freshAir.fs) freshAir.prepare (osRate);
     if (osRate != fattener.fs) fattener.prepare (osRate);
     fattener.set (fatAmt, p.fatColor->load() * 0.01);
-    imager.set (baseRate, 250.0, 4000.0);
+    imager.set (baseRate, p.imgX1->load(), juce::jmax (p.imgX2->load(), p.imgX1->load() * 1.5f), juce::jlimit (0, 2, (int) p.imgSlope->load()));
     character.set (osRate, charType, charAmt);
 
     depthLP.setLowpass (osRate, 110.0);
@@ -719,7 +766,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     {
         analogBump[(size_t) c].peak (osRate, 35.0, 0.7, analog * 1.2);
         analogShelf[(size_t) c].highShelf (osRate, 14000.0, 0.7, -analog * 1.5);
-        clipF[(size_t) c].set (osRate, clipLo[clipBand], clipHi[clipBand]);
+        clipF[(size_t) c].set (osRate, clipLo[clipBand], clipHi[clipBand], juce::jlimit (0, 2, (int) p.clipSlope->load()));
         dc1[(size_t) c].set (osRate, 8.0);
         dc2[(size_t) c].set (osRate, 8.0);
     }
@@ -756,6 +803,23 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             d[i] = dryDelay.popSample (c);
         }
         updateMax (inPeakAcc, pk);
+        if (aiState.load (std::memory_order_relaxed) == 1) aiWinPeak = std::max (aiWinPeak, (double) pk);
+    }
+    // AUTO IN : crete par fenetre de 0,4 s sur 3 s de musique ; IN vise des cretes a -3 dBFS
+    if (aiState.load (std::memory_order_relaxed) == 1)
+    {
+        aiWinCount += n;
+        if (aiWinCount >= (int) (0.4 * baseRate))
+        {
+            const double db = 20.0 * std::log10 (aiWinPeak + 1e-9);
+            if (db > -50.0) { aiPeakSum += db; ++aiWins; }
+            aiWinPeak = 0; aiWinCount = 0;
+            if (aiWins >= 8)
+            {
+                aiResultDb.store ((float) (-3.0 - aiPeakSum / aiWins));
+                aiState.store (2);
+            }
+        }
     }
 
     // ---------- 1. IN
@@ -847,11 +911,13 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
 
     // ---------- 5. OTT, PUNCH, SPACE (avant la saturation : le clipper rattrape tout)
     rOtt.set (ott, n); rPunch.set (punch, n); rSpace.set (spaceAmt, n);
+    const double kickAmt = p.kick->load() * 0.01;
     for (int i = 0; i < n; ++i)
     {
         double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
         ottFx.process (x, nch, rOtt.next(), ottBand);
         punchFx.process (x, nch, rPunch.next());
+        if (kickAmt > 0.0) kickFx.process (x, nch, kickAmt);
         const double sp = rSpace.next();
         if (sp > 0.0)
         {
@@ -866,7 +932,20 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
 
     // ---------- 5a. DE-ESSER
     const bool dsAuto = p.dsAuto->load() > 0.5f;
-    if (p.dsRange->load() > 0.f || dsAuto)
+    // AUTO DE-ESS one-shot : un second de-esser en mode auto ecoute une copie du signal
+    if (dsLearnState.load() == 1)
+    {
+        dsLearner.setFreq (dsLearner.autoFreq);
+        dsLearner.setHi (juce::jmax (p.dsFreqHi->load(), 9000.f));
+        for (int i = 0; i < n; ++i)
+        {
+            double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            if (std::abs (x[0]) + std::abs (x[1]) > 1e-4) dsLearnSec += 1.0 / baseRate;
+            dsLearner.process (x, nch, -30.0, 6.0, false, true);
+        }
+        if (dsLearnSec >= 5.0) dsLearnState.store (2);
+    }
+    if (p.dsOn->load() > 0.5f && (p.dsRange->load() > 0.f || dsAuto))
     {
         const double thr = p.dsThr->load(), rng = p.dsRange->load() > 0.f ? (double) p.dsRange->load() : 6.0;
         const bool listen = p.dsListen->load() > 0.5f;
@@ -904,7 +983,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             ms.solo[k] = p.mbSolo[k]->load() > 0.5f; ms.byp[k] = p.mbByp[k]->load() > 0.5f;
         }
         ms.knee = p.mbKnee->load(); ms.mix = p.mbMix->load() * 0.01;
-        mbComp.setXover (p.mbX[0]->load(), p.mbX[1]->load(), p.mbX[2]->load());
+        mbComp.setXover (p.mbX[0]->load(), p.mbX[1]->load(), p.mbX[2]->load(), juce::jlimit (0, 2, (int) p.mbSlope->load()));
         mbComp.setTimes (ms);
         mbComp.grMin.fill (0);
         const bool mbAuto = p.mbAuto->load() > 0.5f;
@@ -912,13 +991,17 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         for (int i = 0; i < n; ++i)
         {
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
-            double pin = 0, pout = 0;
-            for (int c = 0; c < nch; ++c) pin += x[c] * x[c];
+            // AUTO GAIN : on compare un niveau pondere comme l'oreille (graves attenues, haut-medium
+            // accentue). Avant, un RMS brut : comprimer les graves faisait tout remonter beaucoup trop fort.
+            const double mIn = 0.5 * (x[0] + (nch > 1 ? x[1] : x[0]));
+            const double wIn = mbWIn[1].process (mbWIn[0].process (mIn));
             mbComp.process (x, nch, ms);
-            for (int c = 0; c < nch; ++c) pout += x[c] * x[c];
-            // AUTO GAIN : le multibande garde le meme volume qu'a son entree
-            mbInMs += sA * (pin - mbInMs); mbOutMs += sA * (pout - mbOutMs);
-            const double tg = (mbAuto && mbInMs > 1e-9 && mbOutMs > 1e-9) ? juce::jlimit (0.25, 4.0, std::sqrt (mbInMs / mbOutMs)) : 1.0;
+            const double mOut = 0.5 * (x[0] + (nch > 1 ? x[1] : x[0]));
+            const double wOut = mbWOut[1].process (mbWOut[0].process (mOut));
+            mbInMs += sA * (wIn * wIn - mbInMs); mbOutMs += sA * (wOut * wOut - mbOutMs);
+            // on ne rend que 80 % de l'ecart, limite a +/- 6 dB : jamais plus fort qu'a l'entree
+            const double tg = (mbAuto && mbInMs > 1e-9 && mbOutMs > 1e-9)
+                                ? juce::jlimit (0.5, 2.0, std::pow (mbInMs / mbOutMs, 0.4)) : 1.0;
             mbAg += gA * (tg - mbAg);
             for (int c = 0; c < nch; ++c) ch[c][i] = (float) (x[c] * mbAg);
         }
@@ -951,15 +1034,17 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         glue.configure (juce::jlimit (0, 3, (int) p.glueHpf->load()), juce::jlimit (0, 5, (int) p.glueAtt->load()), rel);
         const double thr = p.glueThr->load(), ratio = ratios[juce::jlimit (0, 3, (int) p.glueRatio->load())];
         const double mk = p.glueMakeup->load(), gm = p.glueMix->load() * 0.01;
+        const bool glueAutoOn = p.glueAuto->load() > 0.5f;
         double grm = 0;
         for (int i = 0; i < n; ++i)
         {
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
-            glue.process (x, nch, thr, ratio, mk, gm, rel == 4);
+            glue.process (x, nch, thr, ratio, mk, gm, rel == 4, glueAutoOn);
             grm = juce::jmin (grm, glue.lastGr);
             for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
         }
         updateMin (glueGrAcc, (float) grm);
+        glueAutoDb.store ((float) glue.autoMk);
     }
 
     // ---------- 6. Etages non lineaires (sur-echantillonnes, sauf No Latency)
@@ -986,9 +1071,27 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     satWasOn = satOn; charWasOn = charOn; airWasOn = airOn;
 
     double grPre = 0, grPost = 0;
+    // waveform du clipper : tranches de ~2,7 ms au taux sur-echantillonne
+    const int wavSlice = juce::jmax (1, (int) (0.0027 * osRate));
+    auto wav = [this] (double pre, double post) noexcept
+    {
+        clipWavPreMax = std::max (clipWavPreMax, (float) pre);  clipWavPreMin = std::min (clipWavPreMin, (float) pre);
+        clipWavPostMax = std::max (clipWavPostMax, (float) post); clipWavPostMin = std::min (clipWavPostMin, (float) post);
+    };
 
     for (int i = 0; i < on; ++i)
     {
+        if (++clipWavCount >= wavSlice)
+        {
+            const int w = clipWavWrite.load (std::memory_order_relaxed);
+            clipWavPreHi[(size_t) w].store (clipWavPreMax, std::memory_order_relaxed);
+            clipWavPreLo[(size_t) w].store (clipWavPreMin, std::memory_order_relaxed);
+            clipWavPostHi[(size_t) w].store (clipWavPostMax, std::memory_order_relaxed);
+            clipWavPostLo[(size_t) w].store (clipWavPostMin, std::memory_order_relaxed);
+            clipWavWrite.store ((w + 1) % clipWavSize, std::memory_order_release);
+            clipWavPreMax = clipWavPreMin = clipWavPostMax = clipWavPostMin = 0.f;
+            clipWavCount = 0;
+        }
         const double mo = rMouth.next(), ma = rMask.next(), de = rDepth.next();
         const double an = rAnalog.next(), cg = rClip.next(), bo = rBody.next();
         const double am1 = rAirM.next(), ah = rAirH.next(), chA = rChar.next(), sm = rSatMix.next();
@@ -1009,7 +1112,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             // THE MASK (cale sur MONSTER) : Side seul, saturation impaire + gain
             double rest = 0;
             const double b = maskF.process (S, rest, M);
-            S = rest + b + ma * (gdsp::shape::maskSat (b, maskA, maskG) - b);
+            S = rest + (ma > 0.0 ? maskOpen.process (b, M, ma) : b);
             M = applyDepth (M, de);
             x[0] = M + S;
             x[1] = M - S;
@@ -1064,6 +1167,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             M = clipFn (M, clipShape);
             S = clipFn (S, clipShape);
             double o[2] = { M + S, M - S };
+            wav (l, o[0]); wav (r, o[1]);
             for (int c = 0; c < 2; ++c)
             {
                 if (clipShape == 2) o[c] = dc2[(size_t) c].process (o[c]);
@@ -1081,8 +1185,10 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
                 if (std::abs (v) > softK) ++clipHits;
                 ++clipTotal;
                 grPre = std::max (grPre, std::abs (v));
+                const double pre = v;
                 v = clipFn (v, clipShape);
                 grPost = std::max (grPost, std::abs (v));
+                wav (pre, v);
             }
             else
             {
@@ -1091,6 +1197,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
                 const double cb = clipFn (bd, clipShape);
                 grPre = std::max (grPre, std::abs (bd));
                 grPost = std::max (grPost, std::abs (cb));
+                wav (bd, cb);
                 v += cb / cg - b;
             }
             if (clipShape == 2) v = dc2[(size_t) c].process (v);
@@ -1098,6 +1205,8 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         }
     }
     rMouth.finish(); rMask.finish(); rDepth.finish(); rAnalog.finish(); rClip.finish(); rBody.finish();
+    maskLiftDb.store (mask > 0.0 ? (float) maskOpen.lastLiftDb : 0.f);
+    maskGuard.store (mask > 0.0 && maskOpen.lastGuard > 0.5);
     rAirM.finish(); rAirH.finish(); rChar.finish(); rSatMix.finish(); rFat.finish();
     for (auto& r : rSat) r.finish();
 
@@ -1662,12 +1771,22 @@ void RavennProcessor::applyAutoMaster()
     else if (amTargetLufs >= -9.f)  limStyle = 5;      // MODERN
     if (useRef && (r.peakDb - r.lufs) < 8.f) limStyle = 5;
 
-    // gain : cible LUFS, le reste a l'ajustement fin
+    // gain : le plus propre possible, jusqu'au plafond (0 dB en pratique : -0,1 dBTP)
+    //  1) gain propre sur IN tant que les cretes ne touchent pas le plafond
+    //  2) puis un peu de clipper (transparent jusqu'a ~2,5 dB)
+    //  3) puis un peu de limiteur (~3,5 dB)
+    //  4) au-dela, on partage entre les deux : aucun etage ne travaille seul tres fort
+    const double ceilDb = amTargetLufs <= -20.f ? -1.0 : -0.1;
     const double G = amTargetLufs - amInLufs + 0.5;
-    float in = (float) juce::jlimit (-15.0, 15.0, G * 0.35);
-    float clip = (float) juce::jlimit (-15.0, 15.0, G - in);
-    const double rest = G - in - clip;
-    if (std::abs (rest) > 0.05) in = (float) juce::jlimit (-15.0, 15.0, in + rest);
+    const double head = std::max (0.0, ceilDb - 0.3 - peakDb);
+    const double inG = G < 0.0 ? G : std::min (G, head);
+    double R = std::max (0.0, G - inG);
+    double clipG = std::min (R, 2.5); R -= clipG;
+    double limG = std::min (R, 3.5);  R -= limG;
+    clipG += 0.5 * R; limG += 0.5 * R;
+    float in = (float) juce::jlimit (-15.0, 15.0, inG);
+    float clip = (float) juce::jlimit (-15.0, 15.0, clipG);
+    float limGainV = (float) juce::jlimit (0.0, 24.0, limG + std::max (0.0, clipG - 15.0));
 
     // ===== 3. Application : tous les parametres, en UNE etape d'undo
     // (on repart des valeurs par defaut, sauf les choix de travail de l'utilisateur)
@@ -1679,7 +1798,7 @@ void RavennProcessor::applyAutoMaster()
             if (! keep.contains (rp->getParameterID()))
                 set (rp->getParameterID().toRawUTF8(), rp->convertFrom0to1 (rp->getDefaultValue()));
 
-    set ("body", 1.f); set ("punch", punch);
+    set ("body", 0.f); set ("punch", punch);
     set ("lowShelf", lowShelf); set ("air", air); set ("tilt", tilt);
     set ("depth", depth); set ("mouth", mouth); set ("mask", mask); set ("maskBand", (float) maskBand); set ("analog", 15.f);
     set ("width", width); set ("monoBass", monoBass ? 1.f : 0.f); set ("monoFreq", 120.f);
@@ -1697,7 +1816,8 @@ void RavennProcessor::applyAutoMaster()
     set ("clipShape", 1.f); set ("clipKnee", loud ? 30.f : 45.f);
     if (p.noLatency->load() < 0.5f) set ("os", 2.f);
     set ("limOn", 1.f); set ("limStyle", (float) limStyle); set ("limTP", 1.f);
-    set ("limCeil", streaming ? -1.f : -0.3f);
+    juce::ignoreUnused (streaming);
+    set ("limCeil", (float) ceilDb); set ("limGain", limGainV);
     set ("in", in); set ("clip", clip);
 
     for (auto& [id, val] : v) setTreeValue (id, val, &undo);
@@ -1714,18 +1834,28 @@ void RavennProcessor::refineAutoMaster()
     const double predicted = amInLufs + (lout - lin);
     const double diff = amTargetLufs - predicted;
 
-    float clip = p.clip->load(), in = p.in->load();
-    const double step = juce::jlimit (-6.0, 6.0, diff * 1.15);
-    double newClip = clip + step;
+    // correction partagee entre clipper et limiteur (le plus propre des deux d'abord quand on baisse)
+    float clip = p.clip->load(), in = p.in->load(), lg = p.limGain->load();
+    const double step = juce::jlimit (-6.0, 6.0, diff * 1.1);
+    double dClip = 0.5 * step, dLim = 0.5 * step;
+    if (step < 0.0)
+    {
+        // on enleve d'abord ce qui ecrase le plus
+        dLim = std::max (step, -(double) lg);
+        dClip = step - dLim;
+    }
+    double newClip = clip + dClip, newLim = lg + dLim;
     bool maxed = false;
+    if (newLim > 24.0) { newClip += newLim - 24.0; newLim = 24.0; }
     if (newClip > 15.0)
     {
         const float newIn = (float) juce::jlimit (-15.0, 15.0, in + (newClip - 15.0));
         maxed = newIn >= 15.f && in >= 15.f;
         in = newIn; newClip = 15.0;
     }
-    if (newClip < -15.0) newClip = -15.0;
+    if (newClip < -15.0) { in = (float) juce::jlimit (-15.0, 15.0, in + (newClip + 15.0)); newClip = -15.0; }
     setParamValue ("clip", (float) newClip);
+    setParamValue ("limGain", (float) juce::jlimit (0.0, 24.0, newLim));
     setParamValue ("in", in);
 
     // Reference : on mesure l'equilibre par octave de la SORTIE et on corrige
@@ -1968,8 +2098,46 @@ void RavennProcessor::setTreeValue (const juce::String& id, float value, juce::U
     }
 }
 
+void RavennProcessor::startAutoIn()
+{
+    aiState.store (0);
+    aiPeakSum = 0; aiWinPeak = 0; aiActive = 0; aiWinCount = 0; aiWins = 0;
+    aiState.store (1);
+}
+
+void RavennProcessor::startDeEssLearn()
+{
+    dsLearnState.store (0);
+    dsLearner.reset();
+    dsLearnSec = 0;
+    dsLearnState.store (1);
+}
+
 void RavennProcessor::linkTick()
 {
+    // AUTO IN : resultat de la mesure -> potard IN (hors historique d'undo, le LINK ne reagit pas)
+    if (aiState.load() == 2)
+    {
+        aiState.store (0);
+        const float v = juce::jlimit (-15.f, 3.f, std::round (aiResultDb.load() * 2.f) / 2.f);
+        setTreeValue ("in", v, nullptr);
+        linkIn = v;
+    }
+    // AUTO DE-ESS (one-shot) : fin de l'ecoute -> FREQ, THRESHOLD, RANGE, ON, en une etape d'undo
+    if (dsLearnState.load() == 2)
+    {
+        dsLearnState.store (0);
+        changesBefore = apvts.copyState();
+        undo.beginNewTransaction ("Auto De-ess");
+        setTreeValue ("dsOn", 1.f, &undo);
+        setTreeValue ("dsAuto", 0.f, &undo);
+        setTreeValue ("dsFreq", juce::jlimit (2500.f, 12000.f, (float) dsLearner.autoFreq), &undo);
+        setTreeValue ("dsFreqHi", juce::jlimit (4000.f, 20000.f, (float) dsLearner.autoFreq * 2.2f), &undo);
+        setTreeValue ("dsThr", juce::jlimit (-60.f, 0.f, (float) dsLearner.autoThr), &undo);
+        if (p.dsRange->load() < 3.f) setTreeValue ("dsRange", 6.f, &undo);
+        undo.beginNewTransaction();
+        changesAfter = apvts.copyState();
+    }
     // AUTO DE-ESSER : les potards THRESHOLD et FREQ suivent ce que l'auto a trouve
     if (p.dsAuto->load() > 0.5f)
     {
@@ -2059,6 +2227,9 @@ void RavennProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         if (xml->hasTagName (apvts.state.getType()))
         {
+            // un etat sauvegarde = le plugin a deja ete regle : pas d'AUTO IN
+            autoInPending = false;
+            if (aiState.load() == 1) aiState.store (0);
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
             const auto name = apvts.state.getProperty ("preset").toString();
             if (name.isNotEmpty()) presets.setCurrentName (name);

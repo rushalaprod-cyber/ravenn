@@ -40,6 +40,8 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **1.7** : AUTO STEM (8 types de pistes, style, intensité), MATCH REFERENCE (A = ton réglage, B/C/D = 3 dosages) et liste CHANGES (avant → après, enregistrable en preset), GLUE (compresseur de bus + VU-mètre), jauge du clipper avec fréquences réglables, de-esser avec bande FREQ → FREQ HIGH et vue façon Pro-DS (l'auto bouge ses potards), plages de voix et plages 3D (presets + Q), stéréo 2D / nuage 3D / cascade 3D, écran VHS d'aide au survol, 8 langues (EN, FR, DE, JA, ZH, PT, ES, NL), presets par stem, export de preset, flèches synchronisées dans la page des presets.
 
+**1.8** : The Mask refait (ouverture du Side sans saturation, démasquage, garde mono), Kick Presence, AUTO IN à l'insertion, auto master plus propre jusqu'à 0 dB (-0,1 dBTP), auto gain du glue + détection plus douce, pentes 12/24/48 dB/oct (multibande, saturation, clipper, largeur), plages de largeur réglables, de-esser ON/OFF + AUTO DE-ESS ponctuel, waveform du clipper, indicateurs de la vue stéréo, presets de voix + RESET, vitesses affichées SLOW/FAST, Body coupé par défaut, logo net, correction du plantage à la fermeture (FL Studio).
+
 **RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
@@ -61,8 +63,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.7.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.7.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.8.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.8.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

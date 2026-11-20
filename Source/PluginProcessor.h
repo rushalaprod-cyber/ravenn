@@ -59,6 +59,20 @@ public:
     std::array<std::atomic<float>, 2> dynGain;      // gain actuel des bandes dynamiques (dB)
     std::atomic<float> mbAutoDb { 0.f }, dsGrAcc { 0.f }, longTermLufs { -100.f };
     std::atomic<float> glueGrAcc { 0.f }, clipActivity { 0.f }, dsThrNow { -30.f }, dsFreqNow { 6500.f };
+    std::atomic<float> maskLiftDb { 0.f }, glueAutoDb { 0.f };
+    std::atomic<bool> maskGuard { false };
+    // Waveform du clipper : une tranche par ~2,7 ms (crete avant / apres clip, gain du clipper inclus)
+    static constexpr int clipWavSize = 1024;
+    std::array<std::atomic<float>, clipWavSize> clipWavPreHi, clipWavPreLo, clipWavPostHi, clipWavPostLo;
+    std::atomic<int> clipWavWrite { 0 };
+    // AUTO IN (une fois a l'insertion, ou via le bouton)
+    void startAutoIn();
+    int getAutoInState() const { return aiState.load(); }
+    float getAutoInResult() const { return aiResultDb.load(); }
+    // AUTO DE-ESS (one-shot, comme l'auto master) : ecoute ~5 s puis regle les potards
+    void startDeEssLearn();
+    int getDeEssLearnState() const { return dsLearnState.load(); }
+    float getDeEssLearnProgress() const { return (float) juce::jlimit (0.0, 1.0, dsLearnSec / 5.0); }
     // Vue du de-esser : niveau des sifflantes et reduction, une tranche par 10 ms
     std::array<std::atomic<float>, 512> dsViewIn, dsViewGr;
     std::atomic<int> dsViewWrite { 0 };
@@ -175,8 +189,21 @@ private:
                            *dsFreq {}, *dsThr {}, *dsRange {}, *dsListen {}, *specRes {}, *specSpeed {}, *specTarget {},
                            *specCut {}, *mbAuto {}, *dsAuto {},
                            *clipXLo {}, *clipXHi {}, *dsFreqHi {}, *voiceQ {}, *depth3dHi {}, *depth3dQ {},
-                           *glueOn {}, *glueThr {}, *glueRatio {}, *glueAtt {}, *glueRel {}, *glueMakeup {}, *glueMix {}, *glueHpf {};
+                           *glueOn {}, *glueThr {}, *glueRatio {}, *glueAtt {}, *glueRel {}, *glueMakeup {}, *glueMix {}, *glueHpf {},
+                           *glueAuto {}, *kick {}, *dsOn {}, *imgX1 {}, *imgX2 {}, *mbSlope {}, *satSlope {}, *clipSlope {}, *imgSlope {};
     } p;
+    gdsp::MaskOpen maskOpen;
+    gdsp::KickPresence kickFx;
+    gdsp::DeEsser dsLearner;
+    // AUTO IN : mesure de l'entree (thread audio) pour regler IN a l'insertion
+    double aiPeakSum = 0, aiWinPeak = 0, aiActive = 0; int aiWinCount = 0, aiWins = 0;
+    std::atomic<int> aiState { 0 };        // 0 = rien, 1 = mesure, 2 = resultat pret
+    std::atomic<float> aiResultDb { 0.f };
+    bool autoInPending = true;
+    // apprentissage du de-esser (one-shot)
+    std::atomic<int> dsLearnState { 0 };   // 0 = rien, 1 = ecoute, 2 = pret
+    double dsLearnSec = 0;
+    float clipWavPreMax = 0.f, clipWavPreMin = 0.f, clipWavPostMax = 0.f, clipWavPostMin = 0.f; int clipWavCount = 0;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
     std::unique_ptr<juce::dsp::Oversampling<float>> tpOversampler;
@@ -226,6 +253,7 @@ private:
     std::array<gdsp::LR4, 2> lowCutF, highCutF;
     float lastLowCut = -1.f, lastHighCut = -1.f;
     double mbInMs = 0, mbOutMs = 0, mbAg = 1.0;
+    std::array<gdsp::Biquad, 2> mbWIn, mbWOut;   // ponderation de l'auto gain multibande
     // LUFS long terme (30 s)
     std::array<gdsp::Biquad, 2> ltShelf, ltHp;
     std::vector<double> ltBlocks;

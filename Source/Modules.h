@@ -266,19 +266,15 @@ namespace satshape
 
 struct MultibandSat
 {
-    std::array<std::array<LR4, 2>, 2> split;
+    std::array<std::array<LRX, 2>, 2> split;
     std::array<DCBlock, 2> dc;
     double fs = 0, lo = 0, hi = 0;
 
-    void setXover (double sampleRate, double loHz, double hiHz) noexcept
+    void setXover (double sampleRate, double loHz, double hiHz, int slope = 1) noexcept
     {
-        const bool fsChanged = sampleRate != fs;
         fs = sampleRate;
-        if (fsChanged || loHz != lo || hiHz != hi)
-        {
-            lo = loHz; hi = hiHz;
-            for (int c = 0; c < 2; ++c) { split[0][(size_t) c].setLowpass (fs, lo); split[1][(size_t) c].setLowpass (fs, hi); }
-        }
+        lo = loHz; hi = hiHz;
+        for (int c = 0; c < 2; ++c) { split[0][(size_t) c].setLowpass (fs, lo, slope); split[1][(size_t) c].setLowpass (fs, hi, slope); }
         for (auto& d : dc) d.set (fs, 10.0);
     }
     void reset() noexcept { for (auto& s : split) for (auto& f : s) f.reset(); for (auto& d : dc) d.reset(); }
@@ -606,13 +602,12 @@ struct Fattener
 // IMAGER 3 bandes : largeur du Side par bande (mono-compatible).
 struct Imager
 {
-    std::array<LR4, 2> split;
+    std::array<LRX, 2> split;
     double fs = 0, lo = 0, hi = 0;
-    void set (double sampleRate, double loHz, double hiHz) noexcept
+    void set (double sampleRate, double loHz, double hiHz, int slope = 1) noexcept
     {
-        if (sampleRate == fs && loHz == lo && hiHz == hi) return;
         fs = sampleRate; lo = loHz; hi = hiHz;
-        split[0].setLowpass (fs, lo); split[1].setLowpass (fs, hi);
+        split[0].setLowpass (fs, lo, slope); split[1].setLowpass (fs, hi, slope);
     }
     void reset() noexcept { for (auto& s : split) s.reset(); }
     inline double process (double S, const double* w) noexcept
@@ -909,8 +904,8 @@ struct MultibandComp
     // Vrai arbre Linkwitz-Riley 24 dB/oct : passe-bas + passe-haut a chaque coupure,
     // et passe-tout de compensation sur les bandes basses : la somme est plate
     // (a la phase pres), meme quand les bandes sont compressees differemment.
-    std::array<std::array<LR4, 2>, 3> lp, hp;
-    std::array<std::array<LR4, 2>, 3> apL, apH;      // passe-tout : [0] x2 sur LOW, [1] x3 sur LOW, [2] x3 sur LOW MID
+    std::array<std::array<LRX, 2>, 3> lp, hp;
+    std::array<std::array<LRX, 2>, 3> apL, apH;      // passe-tout : [0] x2 sur LOW, [1] x3 sur LOW, [2] x3 sur LOW MID
     std::array<double, 3> xf {};
     std::array<double, nb> env {}, gDb {}, aC {}, rC {}, lastAtt {}, lastRel {};
     std::array<double, nb> grMin {};
@@ -929,18 +924,21 @@ struct MultibandComp
         for (auto* arr : { &lp, &hp, &apL, &apH }) for (auto& s : *arr) for (auto& f : s) f.reset();
         env.fill (0); gDb.fill (0); grMin.fill (0);
     }
-    void setXover (double a, double b, double c) noexcept
+    int slope = 1;
+    void setXover (double a, double b, double c, int sl = 1) noexcept
     {
         const double v[3] = { a, std::max (a * 1.2, b), std::max (b * 1.2, c) };
+        const bool slopeChanged = sl != slope;
+        slope = sl;
         for (int k = 0; k < 3; ++k)
-            if (v[k] != xf[(size_t) k])
+            if (slopeChanged || v[k] != xf[(size_t) k])
             {
                 xf[(size_t) k] = v[k];
-                for (auto& f : lp[(size_t) k]) f.setLowpass (fs, v[k]);
-                for (auto& f : hp[(size_t) k]) f.setHighpass (fs, v[k]);
+                for (auto& f : lp[(size_t) k]) f.setLowpass (fs, v[k], sl);
+                for (auto& f : hp[(size_t) k]) f.setHighpass (fs, v[k], sl);
                 // passe-tout : [0] a x2, [1] et [2] a x3
-                if (k == 1) { for (auto& f : apL[0]) f.setLowpass (fs, v[k]); for (auto& f : apH[0]) f.setHighpass (fs, v[k]); }
-                if (k == 2) for (int a = 1; a <= 2; ++a) { for (auto& f : apL[(size_t) a]) f.setLowpass (fs, v[k]); for (auto& f : apH[(size_t) a]) f.setHighpass (fs, v[k]); }
+                if (k == 1) { for (auto& f : apL[0]) f.setLowpass (fs, v[k], sl); for (auto& f : apH[0]) f.setHighpass (fs, v[k], sl); }
+                if (k == 2) for (int a = 1; a <= 2; ++a) { for (auto& f : apL[(size_t) a]) f.setLowpass (fs, v[k], sl); for (auto& f : apH[(size_t) a]) f.setHighpass (fs, v[k], sl); }
             }
     }
     void setTimes (const Settings& s) noexcept
@@ -1337,13 +1335,23 @@ struct SpectralEngine
 // relachement par crans, relachement AUTO dependant du programme, mix parallele.
 struct GlueComp
 {
+    // Compresseur de bus facon console : detection lissee (RMS court + un peu de crete),
+    // genou doux, relachement AUTO a deux vitesses, AUTO GAIN qui compense la reduction moyenne.
     std::array<Biquad, 2> scHP;
-    double fs = 0, env = 0, gDb = 0, aC = 0, rC = 0, rSlowC = 0, envSlow = 0, gSm = 0;
+    double fs = 0, env = 0, gDb = 0, aC = 0, rC = 0, rSlowC = 0, envSlow = 0, gSm = 0, msC = 0, ms = 0;
+    double avgGr = 0, avgC = 0, autoMk = 0;
     int lastHpf = -1, lastAtt = -1, lastRel = -1;
     double lastGr = 0;
 
-    void prepare (double sampleRate) { fs = sampleRate; lastHpf = lastAtt = lastRel = -1; gSm = 1.0 - std::exp (-1.0 / (0.0005 * fs)); reset(); }
-    void reset() noexcept { for (auto& f : scHP) f.reset(); env = envSlow = gDb = 0; }
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate; lastHpf = lastAtt = lastRel = -1;
+        gSm  = 1.0 - std::exp (-1.0 / (0.0005 * fs));
+        msC  = 1.0 - std::exp (-1.0 / (0.004 * fs));     // fenetre RMS ~4 ms
+        avgC = 1.0 - std::exp (-1.0 / (1.5 * fs));       // moyenne de la reduction pour l'auto gain
+        reset();
+    }
+    void reset() noexcept { for (auto& f : scHP) f.reset(); env = envSlow = gDb = ms = avgGr = autoMk = 0; }
 
     void configure (int hpf, int att, int rel) noexcept
     {
@@ -1361,15 +1369,20 @@ struct GlueComp
         }
     }
 
-    inline void process (double* x, int nch, double thrDb, double ratio, double makeupDb, double mix, bool autoRel) noexcept
+    inline void process (double* x, int nch, double thrDb, double ratio, double makeupDb, double mix, bool autoRel,
+                         bool autoGain = false) noexcept
     {
-        double d = 0;
+        double pk = 0, sq = 0;
         for (int c = 0; c < nch; ++c)
         {
             const double s = lastHpf > 0 ? scHP[(size_t) c].process (x[c]) : x[c];
-            d = std::max (d, std::abs (s));
+            pk = std::max (pk, std::abs (s));
+            sq += s * s;
         }
-        const double L = 20.0 * std::log10 (d + 1e-9);
+        ms += msC * (sq / nch - ms);
+        // 70 % RMS (rond, sans pompage sur les transitoires) + 30 % crete (garde la tenue)
+        const double det = 0.7 * std::sqrt (ms) * 1.4142135623730951 + 0.3 * pk;
+        const double L = 20.0 * std::log10 (det + 1e-9);
         constexpr double knee = 6.0;
         const double over = L - thrDb;
         const double slope = 1.0 / ratio - 1.0;
@@ -1382,9 +1395,107 @@ struct GlueComp
         envSlow += rSlowC * (env - envSlow);
         gDb += gSm * (env - gDb);
         lastGr = gDb;
-        const double g = std::pow (10.0, (gDb + makeupDb) / 20.0);
-        for (int c = 0; c < nch; ++c) x[c] = x[c] * (1.0 - mix) + x[c] * g * mix;
+        // AUTO GAIN : rend ~85 % de la reduction moyenne (le volume percu reste le meme, sans remonter les pics)
+        avgGr += avgC * (gDb - avgGr);
+        autoMk = autoGain ? -0.85 * avgGr : 0.0;
+        const double g = std::exp ((gDb + makeupDb + autoMk) * 0.11512925464970229);
+        const double k = 1.0 + mix * (g - 1.0);
+        for (int c = 0; c < nch; ++c) x[c] *= k;
     }
 };
+//==============================================================================
+// THE MASK 2 : ouvre le Side dans sa bande, proprement.
+//  - aucune saturation sur le Side (c'est ce qui donnait l'impression de phase)
+//  - gain suivi d'enveloppe : jusqu'a +7 dB comme MONSTER, sans distorsion
+//  - DEMASQUAGE : plus le centre est charge dans la bande, plus le Side s'ouvre
+//    pour degager le milieu (voix, kick, basse) ; si le centre est vide, on reste doux
+//  - GARDE MONO : le Side ne depasse jamais 80 % du Mid dans la bande (pas de fausse
+//    stereo, correlation toujours positive), et un Side quasi absent (source mono,
+//    bruit de phase) n'est pas remonte.
+struct MaskOpen
+{
+    BandFilter mDet;
+    double fs = 0, envS = 0, envM = 0, g = 1, eC = 0, gUpC = 0, gDnC = 0;
+    double lastLiftDb = 0, lastGuard = 0;
 
+    void set (double sampleRate, double lo, double hi) noexcept
+    {
+        if (sampleRate != fs)
+        {
+            fs = sampleRate;
+            eC   = 1.0 - std::exp (-1.0 / (0.020 * fs));
+            gUpC = 1.0 - std::exp (-1.0 / (0.060 * fs));
+            gDnC = 1.0 - std::exp (-1.0 / (0.010 * fs));
+        }
+        mDet.set (fs, lo, hi);
+    }
+    void reset() noexcept { mDet.reset(); envS = envM = 0; g = 1; }
+
+    // b = Side dans la bande, M = Mid (detection seulement), amt 0..1
+    inline double process (double b, double M, double amt) noexcept
+    {
+        const double mb = mDet.process (M);
+        envS += eC * (b * b - envS);
+        envM += eC * (mb * mb - envM);
+        const double s = std::sqrt (envS) + 1e-9, m = std::sqrt (envM) + 1e-9;
+        // demasquage : centre charge (Mid >> Side) = on ouvre plus
+        const double density = std::clamp ((20.0 * std::log10 (m / s) - 3.0) / 15.0, 0.0, 1.0);
+        double liftDb = amt * (4.5 + 2.5 * density);                    // 100 % : +4,5 a +7 dB
+        // Side quasi absent (< -30 dB du Mid) : source mono, on ne remonte pas le bruit de phase
+        const double presence = std::clamp ((20.0 * std::log10 (s / m) + 30.0) / 10.0, 0.0, 1.0);
+        liftDb *= presence;
+        // garde mono : Side * gain <= 0,8 * Mid
+        const double maxDb = 20.0 * std::log10 (0.8 * m / s);
+        lastGuard = liftDb > maxDb ? 1.0 : 0.0;
+        liftDb = std::max (0.0, std::min (liftDb, maxDb));
+        const double tg = std::pow (10.0, liftDb / 20.0);
+        g += (tg > g ? gUpC : gDnC) * (tg - g);
+        lastLiftDb = 20.0 * std::log10 (g);
+        return b * g;
+    }
+};
+//==============================================================================
+// KICK PRESENCE : quand un kick arrive (detection sur le grave, enveloppe rapide
+// contre enveloppe lente), on pousse son corps (~60 Hz) et son clic (~3,5 kHz).
+// Rien ne bouge entre les kicks : la basse et la voix ne sont pas touchees.
+struct KickPresence
+{
+    Biquad detLP;
+    std::array<Biquad, 2> body, click;
+    double fs = 0, fast = 0, slow = 0, gate = 0, aF = 0, rF = 0, cS = 0, gUp = 0, gDn = 0;
+    double lastGate = 0;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        detLP.lowpass (fs, 110.0, 0.7);
+        for (auto& b : body)  b.bandpass (fs, 62.0, 1.1);
+        for (auto& c : click) c.bandpass (fs, 3500.0, 1.3);
+        aF  = 1.0 - std::exp (-1.0 / (0.0015 * fs));
+        rF  = 1.0 - std::exp (-1.0 / (0.040 * fs));
+        cS  = 1.0 - std::exp (-1.0 / (0.350 * fs));
+        gUp = 1.0 - std::exp (-1.0 / (0.002 * fs));
+        gDn = 1.0 - std::exp (-1.0 / (0.090 * fs));
+        reset();
+    }
+    void reset() noexcept { detLP.reset(); for (auto& b : body) b.reset(); for (auto& c : click) c.reset(); fast = slow = gate = 0; }
+
+    inline void process (double* x, int nch, double amt) noexcept
+    {
+        const double m = nch > 1 ? 0.5 * (x[0] + x[1]) : x[0];
+        const double d = std::abs (detLP.process (m));
+        fast += (d > fast ? aF : rF) * (d - fast);
+        slow += cS * (d - slow);
+        const double ratio = fast / (slow + 1e-6);
+        const double tg = std::clamp ((ratio - 1.25) / 1.2, 0.0, 1.0);
+        gate += (tg > gate ? gUp : gDn) * (tg - gate);
+        lastGate = gate;
+        const double kb = amt * gate * 1.1, kc = amt * gate * 0.7;   // ~ +6 dB corps, +4 dB clic a 100 %
+        for (int c = 0; c < nch; ++c)
+        {
+            const double b = body[(size_t) c].process (x[c]), k = click[(size_t) c].process (x[c]);
+            x[c] += kb * b + kc * k;
+        }
+    }
+};
 } // namespace gdsp

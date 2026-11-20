@@ -675,6 +675,67 @@ int main()
         std::printf ("%-22s %d presets  %s\n", "Presets stems", stems, check (stems >= 12));
     }
 
+    // --- 1.8 : multibande neutre quelle que soit la pente (12 / 24 / 48 dB/oct)
+    for (int sl : { 0, 2 })
+    {
+        RavennProcessor a; setP (a, "bypass", 0);
+        RavennProcessor b; setP (b, "mbOn", 1); setP (b, "mbSlope", (float) sl);
+        for (int k = 1; k <= 4; ++k) setP (b, ("mbThr" + juce::String (k)).toRawUTF8(), 0.f);
+        const auto ra = run (a, 48000.0, 512, 0.3f, 4.0), rb = run (b, 48000.0, 512, 0.3f, 4.0);
+        std::printf ("Multibande pente %s   ecart %.3f dB  %s\n", sl == 0 ? "12" : "48", std::abs (ra.lufs - rb.lufs),
+                     check (std::abs (ra.lufs - rb.lufs) < 0.3f));
+    }
+
+    // --- 1.8 : THE MASK ne fabrique pas de stereo sur une source mono
+    {
+        RavennProcessor p; setP (p, "mask", 100.f); setP (p, "maskBand", 3.f); setP (p, "body", 0);
+        p.prepareToPlay (48000.0, 512);
+        juce::AudioBuffer<float> buf (2, 512); juce::MidiBuffer midi;
+        Gen gen (48000.0);
+        double ss = 0, mm = 0;
+        for (int k = 0; k < 400; ++k)
+        {
+            gen.fill (buf, 512, 0.3f);
+            buf.copyFrom (1, 0, buf, 0, 0, 512);          // mono parfait
+            p.processBlock (buf, midi);
+            if (k > 100)
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double l = buf.getSample (0, i), r = buf.getSample (1, i);
+                    ss += (l - r) * (l - r); mm += (l + r) * (l + r);
+                }
+        }
+        const double sm = 10.0 * std::log10 ((ss + 1e-20) / (mm + 1e-20));
+        std::printf ("%-22s S/M %.1f dB  %s\n", "Mask sur mono", sm, check (sm < -60.0));
+    }
+
+    // --- 1.8 : KICK PRESENCE agit (et rien a zero)
+    {
+        RavennProcessor a, b; setP (b, "kick", 100.f);
+        const auto ra = run (a, 48000.0, 512, 0.3f, 4.0, true), rb = run (b, 48000.0, 512, 0.3f, 4.0, true);
+        const float d = diffDb (ra.out, rb.out);
+        std::printf ("%-22s difference %.1f dB  %s\n", "Kick presence", d, check (rb.finite && d > -40.f));
+    }
+
+    // --- 1.8 : AUTO IN mesure l'entree et vise des cretes a -3 dBFS
+    {
+        RavennProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        run (p, 48000.0, 512, 1.4f, 5.0);
+        const bool ready = p.getAutoInState() == 2;
+        std::printf ("%-22s etat %d  IN conseille %+.1f dB  %s\n", "Auto IN", p.getAutoInState(), p.getAutoInResult(),
+                     check (ready && p.getAutoInResult() < 0.f));
+    }
+
+    // --- 1.8 : AUTO DE-ESS (one-shot) ecoute puis est pret
+    {
+        RavennProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        p.startDeEssLearn();
+        run (p, 48000.0, 512, 0.5f, 7.0);
+        std::printf ("%-22s etat %d  %s\n", "Auto de-ess", p.getDeEssLearnState(), check (p.getDeEssLearnState() == 2));
+    }
+
     // --- Gros bloc
     {
         RavennProcessor p;
