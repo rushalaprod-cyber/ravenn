@@ -94,6 +94,8 @@ if(RAVENN_TESTS)
         JucePlugin_Name="ravenn" JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     if(MSVC)
         target_compile_options(ravennTest PRIVATE /utf-8)
+        # main() garde beaucoup de processeurs sur la pile : 1 Mo par defaut ne suffit plus
+        target_link_options(ravennTest PRIVATE /STACK:67108864)
     endif()
     target_link_libraries(ravennTest PRIVATE
         ravennAssets
