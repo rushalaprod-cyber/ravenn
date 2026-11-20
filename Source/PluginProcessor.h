@@ -107,7 +107,10 @@ public:
     static constexpr double amRefineSeconds = 3.0;
 
 private:
-    void timerCallback() override { autoMasterTick(); }
+    void timerCallback() override { linkTick(); autoMasterTick(); }
+    void linkTick();
+    float linkIn = 0.f, linkClip = 0.f;
+    bool linkWasOn = false;
 
     void processChunk (float* const* ch, const float* const* sc, int nsc, int nch, int n);
     void updateLatency (int osIdx, int lookSamples, bool wowOn);

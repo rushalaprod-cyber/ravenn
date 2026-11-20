@@ -1169,7 +1169,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       eqPos     (p.apvts, "eqPos",     ui::cyan,   tr ("PRE = EQ avant la saturation · POST = après le clipper")),
       os        (p.apvts, "os",        ui::violet, tr ("Sur-échantillonnage : moins d'aliasing, plus de CPU et un peu de latence.")),
       dither    (p.apvts, "dither",    ui::pink,   tr ("Dither TPDF pour un export en 24 / 20 / 16 bits. OFF pour garder zéro bruit."), { "OFF", "24", "20", "16" }),
-      link      (p.apvts, "link",      "LINK",       ui::red,    tr ("Relie In et Clipper en sens inverse.")),
+      link      (p.apvts, "link",      "LINK",       ui::red,    tr ("Relie In et Clipper : tu montes l'un, l'autre descend d'autant (et inversement). Le volume reste stable, seule la densité change.")),
       monoBass  (p.apvts, "monoBass",  "MONO BASS",  ui::violet, tr ("Met les graves en mono sous la fréquence choisie.")),
       delta     (p.apvts, "delta",     "DELTA",      ui::red,    tr (helpDelta)),
       autoGain  (p.apvts, "autoGain",  "AUTO GAIN",  ui::green,  tr ("Compense le volume pour comparer honnêtement avec le bypass.")),

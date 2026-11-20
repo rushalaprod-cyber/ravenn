@@ -565,7 +565,9 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         satOn = satOn || satDrive[b] > 0.05;
     }
 
-    const float clipEffDb = juce::jlimit (-30.f, 30.f, clipDb - (link ? inDb : 0.f));
+    // LINK : les potards bougent eux-memes (voir linkTick), le DSP utilise donc le clipper tel quel
+    juce::ignoreUnused (link);
+    const float clipEffDb = juce::jlimit (-30.f, 30.f, clipDb);
     effectiveClipDb.store (clipEffDb);
 
     // ---------- Coefficients
@@ -1464,6 +1466,27 @@ void RavennProcessor::refineAutoMaster()
                  + juce::String::fromUTF8 ("\n") + amReport;
         amState.store (amDone, std::memory_order_release);
     }
+}
+
+//==============================================================================
+// LINK : In et Clipper bougent ensemble en sens inverse (thread message, 20 Hz).
+// On tourne l'un, l'autre suit : le niveau reste le meme, seule la densite change.
+void RavennProcessor::linkTick()
+{
+    const bool on = p.link->load() > 0.5f;
+    const float in = p.in->load(), clip = p.clip->load();
+    if (on && linkWasOn)
+    {
+        const float dIn = in - linkIn, dClip = clip - linkClip;
+        const bool inMoved = std::abs (dIn) > 1e-4f, clipMoved = std::abs (dClip) > 1e-4f;
+        if (inMoved && ! clipMoved)
+            setParamValue ("clip", juce::jlimit (-15.f, 15.f, clip - dIn));
+        else if (clipMoved && ! inMoved)
+            setParamValue ("in", juce::jlimit (-15.f, 15.f, in - dClip));
+    }
+    linkWasOn = on;
+    linkIn = p.in->load();
+    linkClip = p.clip->load();
 }
 
 //==============================================================================
