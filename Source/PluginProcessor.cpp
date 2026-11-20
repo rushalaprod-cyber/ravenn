@@ -211,6 +211,22 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     choice ("specTarget", "Spectral Target", { "MODERN", "PINK", "REFERENCE", "WARM", "BRIGHT", "HIP-HOP / TRAP",
                                                "EDM / CLUB", "ROCK", "ACOUSTIC", "VOCAL" }, 0);
     toggle ("dsAuto", "Auto De-esser", false);
+
+    // 1.7
+    hz  ("clipXLo",  "Clip Low/Mid",    60.f, 1000.f, 250.f, 200.f);
+    hz  ("clipXHi",  "Clip Mid/High",   1000.f, 12000.f, 4000.f, 4000.f);
+    hz  ("dsFreqHi", "De-esser Freq High", 4000.f, 20000.f, 12000.f, 20000.f);
+    v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "voiceQ", 1 }, "Voice Q", NormalisableRange<float> (0.3f, 4.f, 0.01f, 0.5f), 0.9f));
+    hz  ("depth3dHi", "3D High Cut", 2000.f, 20000.f, 8000.f, 20000.f);
+    v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "depth3dQ", 1 }, "3D Q", NormalisableRange<float> (0.3f, 2.f, 0.01f), 0.6f));
+    toggle ("glueOn", "Glue", false);
+    dB  ("glueThr", "Glue Threshold", -40.f, 0.f, -10.f);
+    choice ("glueRatio", "Glue Ratio", { "1.5:1", "2:1", "4:1", "10:1" }, 1);
+    choice ("glueAtt", "Glue Attack", { "0.1 ms", "0.3 ms", "1 ms", "3 ms", "10 ms", "30 ms" }, 3);
+    choice ("glueRel", "Glue Release", { "0.1 s", "0.3 s", "0.6 s", "1.2 s", "AUTO" }, 4);
+    dB  ("glueMakeup", "Glue Makeup", 0.f, 15.f, 0.f);
+    pct ("glueMix", "Glue Mix", 100.f, 100.f);
+    choice ("glueHpf", "Glue Sidechain HPF", { "OFF", "60 Hz", "90 Hz", "150 Hz" }, 0);
     toggle ("specCut", "Spectral Cut Only", false);
     toggle ("mbAuto", "MB Auto Gain", false);
 
@@ -328,6 +344,11 @@ RavennProcessor::RavennProcessor()
     p.dsFreq = get ("dsFreq"); p.dsThr = get ("dsThr"); p.dsRange = get ("dsRange"); p.dsListen = get ("dsListen");
     p.specRes = get ("specRes"); p.specSpeed = get ("specSpeed"); p.specTarget = get ("specTarget"); p.specCut = get ("specCut");
     p.mbAuto = get ("mbAuto"); p.dsAuto = get ("dsAuto");
+    p.clipXLo = get ("clipXLo"); p.clipXHi = get ("clipXHi"); p.dsFreqHi = get ("dsFreqHi"); p.voiceQ = get ("voiceQ");
+    p.depth3dHi = get ("depth3dHi"); p.depth3dQ = get ("depth3dQ");
+    p.glueOn = get ("glueOn"); p.glueThr = get ("glueThr"); p.glueRatio = get ("glueRatio"); p.glueAtt = get ("glueAtt");
+    p.glueRel = get ("glueRel"); p.glueMakeup = get ("glueMakeup"); p.glueMix = get ("glueMix"); p.glueHpf = get ("glueHpf");
+    for (int i = 0; i < 512; ++i) { dsViewIn[(size_t) i].store (-100.f); dsViewGr[(size_t) i].store (0.f); }
     for (int i = 0; i < 512; ++i) { limViewIn[(size_t) i].store (0.f); limViewGr[(size_t) i].store (0.f); }
     for (int k = 0; k < 2; ++k)
     {
@@ -415,6 +436,7 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         r->snap();
     stabilizer.prepare (sampleRate);
     mbComp.prepare (sampleRate);
+    glue.prepare (sampleRate);
     deEsser.prepare (sampleRate);
     spectral.prepare (sampleRate);
     lastLowCut = lastHighCut = -1.f;
@@ -507,6 +529,7 @@ void RavennProcessor::resetFilters()
     imager.reset();
     stabilizer.reset();
     mbComp.reset();
+    glue.reset();
     deEsser.reset();
     for (auto& f : lowCutF) f.reset();
     for (auto& f : highCutF) f.reset();
@@ -646,7 +669,9 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     sideHP.setHighpass (baseRate, p.monoFreq->load());
     {
         const float vg = p.voice->load(), vf = p.voiceFreq->load();
-        if (vg != lastVoice || vf != lastVoiceF) { voicePeak.peak (baseRate, vf, 0.9, vg); lastVoice = vg; lastVoiceF = vf; }
+        const float vq = p.voiceQ->load();
+        if (vg != lastVoice || vf != lastVoiceF || vq != lastVoiceQ) { voicePeak.peak (baseRate, vf, vq, vg); lastVoice = vg; lastVoiceF = vf; lastVoiceQ = vq; }
+        voiceFocus.q = vq;
     }
     {
         float g[nOct];
@@ -657,7 +682,8 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     // Bandes du Mask mesurees sur MONSTER (FULL laisse le sub tranquille)
     static constexpr double maskLo[4] = { 70.0, 600.0, 1500.0, 130.0 };
     static constexpr double maskHi[4] = { 1100.0, 2600.0, 0.0, 0.0 };
-    static constexpr double clipLo[4] = { 0.0, 0.0, 200.0, 4000.0 };
+    const double cxl = p.clipXLo->load(), cxh = juce::jmax ((double) p.clipXHi->load(), cxl * 1.5);
+    const double clipLo[4] = { 0.0, 0.0, cxl, cxh };
     static constexpr double clipHi[4] = { 0.0, 200.0, 4000.0, 0.0 };
 
     maskF.set (osRate, maskLo[maskBand], maskHi[maskBand]);
@@ -670,8 +696,9 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     ottFx.setXover (baseRate, p.ottXLo->load(), p.ottXHi->load());
     space.setSize (p.spaceSize->load() * 0.01);
     space.setLowCut (p.spaceLow->load());
-    depth3d.setFreq (p.depth3dFreq->load());
-    deEsser.setFreq (p.dsFreq->load());
+    depth3d.setRange (p.depth3dFreq->load(), juce::jmax (p.depth3dHi->load(), p.depth3dFreq->load() * 1.5f), p.depth3dQ->load());
+    deEsser.setFreq (p.dsAuto->load() > 0.5f ? deEsser.autoFreq : (double) p.dsFreq->load());
+    deEsser.setHi (juce::jmax (p.dsFreqHi->load(), p.dsFreq->load() * 1.3f));
     {
         const float lc = p.lowCut->load(), hc = p.highCut->load();
         if (lc != lastLowCut)  { for (auto& f : lowCutF)  f.setHighpass (baseRate, lc); lastLowCut = lc; }
@@ -849,9 +876,21 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
             deEsser.process (x, nch, thr, rng, listen, dsAuto);
             grm = juce::jmin (grm, deEsser.lastGrDb);
+            dsViewPk = std::max (dsViewPk, (float) deEsser.detDb);
+            dsViewGrMin = std::min (dsViewGrMin, (float) deEsser.lastGrDb);
+            if (++dsViewCount >= scopeSlice)
+            {
+                const int w = dsViewWrite.load (std::memory_order_relaxed);
+                dsViewIn[(size_t) w].store (dsViewPk, std::memory_order_relaxed);
+                dsViewGr[(size_t) w].store (dsViewGrMin, std::memory_order_relaxed);
+                dsViewWrite.store ((w + 1) % 512, std::memory_order_release);
+                dsViewPk = -100.f; dsViewGrMin = 0.f; dsViewCount = 0;
+            }
             for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
         }
         updateMin (dsGrAcc, (float) grm);
+        dsThrNow.store (dsAuto ? (float) deEsser.autoThr : (float) thr);
+        dsFreqNow.store ((float) (dsAuto ? deEsser.autoFreq : p.dsFreq->load()));
     }
 
     // ---------- 5b. MULTIBANDE 4 bandes + EQ DYNAMIQUE
@@ -902,6 +941,25 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
                 for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
             }
         for (int k = 0; k < 2; ++k) dynGain[(size_t) k].store ((float) dynEq.b[(size_t) k].g);
+    }
+
+    // ---------- 5c. GLUE (compresseur de bus)
+    if (p.glueOn->load() > 0.5f)
+    {
+        static constexpr double ratios[4] = { 1.5, 2.0, 4.0, 10.0 };
+        const int rel = juce::jlimit (0, 4, (int) p.glueRel->load());
+        glue.configure (juce::jlimit (0, 3, (int) p.glueHpf->load()), juce::jlimit (0, 5, (int) p.glueAtt->load()), rel);
+        const double thr = p.glueThr->load(), ratio = ratios[juce::jlimit (0, 3, (int) p.glueRatio->load())];
+        const double mk = p.glueMakeup->load(), gm = p.glueMix->load() * 0.01;
+        double grm = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            glue.process (x, nch, thr, ratio, mk, gm, rel == 4);
+            grm = juce::jmin (grm, glue.lastGr);
+            for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+        }
+        updateMin (glueGrAcc, (float) grm);
     }
 
     // ---------- 6. Etages non lineaires (sur-echantillonnes, sauf No Latency)
@@ -1020,6 +1078,8 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             if (clipBand == 0)
             {
                 v *= cg;
+                if (std::abs (v) > softK) ++clipHits;
+                ++clipTotal;
                 grPre = std::max (grPre, std::abs (v));
                 v = clipFn (v, clipShape);
                 grPost = std::max (grPost, std::abs (v));
@@ -1043,6 +1103,13 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
 
     os.processSamplesDown (block);
 
+    // activite du clipper (part des echantillons qui touchent le genou), lissee
+    if (clipTotal > 0)
+    {
+        const float r = (float) clipHits / (float) clipTotal;
+        clipActivity.store (clipActivity.load() + 0.15f * (r - clipActivity.load()));
+        clipHits = clipTotal = 0;
+    }
     float chunkGr = 0.f;
     if (grPre > 1e-9)
     {
@@ -1451,6 +1518,14 @@ void RavennProcessor::setParamValue (const juce::String& id, float value)
 void RavennProcessor::autoMasterTick()
 {
     const int st = amState.load (std::memory_order_acquire);
+    if (st == amAnalyzed && stemMode)
+    {
+        applyAutoStem();
+        stemMode = false;
+        amProgress.store (1.f);
+        amState.store (amDone, std::memory_order_release);
+        return;
+    }
     if (st == amAnalyzed)
     {
         applyAutoMaster();
@@ -1597,6 +1672,7 @@ void RavennProcessor::applyAutoMaster()
     // ===== 3. Application : tous les parametres, en UNE etape d'undo
     // (on repart des valeurs par defaut, sauf les choix de travail de l'utilisateur)
     static const juce::StringArray keep { "amTarget", "noLatency", "os", "dither", "bypass" };
+    changesBefore = matchMode && preMatch.isValid() ? preMatch.createCopy() : apvts.copyState();
     undo.beginNewTransaction ("Auto master");
     for (auto* prm : getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
@@ -1624,16 +1700,7 @@ void RavennProcessor::applyAutoMaster()
     set ("limCeil", streaming ? -1.f : -0.3f);
     set ("in", in); set ("clip", clip);
 
-    for (auto& [id, val] : v)
-    {
-        if (auto* rp = apvts.getParameter (id))
-        {
-            auto child = apvts.state.getChildWithProperty ("id", id);
-            const float vv = rp->convertFrom0to1 (rp->convertTo0to1 (val));
-            if (child.isValid()) child.setProperty ("value", vv, &undo);
-            else setParamValue (id, val);
-        }
-    }
+    for (auto& [id, val] : v) setTreeValue (id, val, &undo);
     undo.beginNewTransaction();
 
     amReport = juce::String::fromUTF8 ("Entrée ") + juce::String (amInLufs, 1) + " LUFS"
@@ -1695,15 +1762,221 @@ void RavennProcessor::refineAutoMaster()
                  + (maxed ? juce::String::fromUTF8 (" (maximum physique atteint)") : juce::String())
                  + (worst > 0.0 ? juce::String::fromUTF8 (" · écart avec la réf ") + juce::String (worst, 1) + " dB max" : juce::String())
                  + juce::String::fromUTF8 ("\n") + amReport;
+        changesAfter = apvts.copyState();
+        if (matchMode) buildMatchSlots();
         amState.store (amDone, std::memory_order_release);
     }
 }
 
 //==============================================================================
+// AUTO STEM / MATCH REFERENCE / CHANGEMENTS
+void RavennProcessor::startAutoStem (int type, int style, int intensity)
+{
+    stemType = juce::jlimit (0, numStemTypes - 1, type);
+    stemStyle = juce::jlimit (0, numStyles - 1, style);
+    stemIntensity = juce::jlimit (0, 2, intensity);
+    matchMode = false;
+    startAutoMaster();                 // ecoute 6 s, puis decisions
+    stemMode = stemType != stemMix;    // mix complet = auto master normal
+}
+
+bool RavennProcessor::startMatchReference()
+{
+    if (! refValid.load()) return false;
+    preMatch = apvts.copyState();
+    matchMode = true;
+    stemMode = false;
+    setTreeValue ("amTarget", (float) refTargetIdx, nullptr);
+    startAutoMaster();
+    return true;
+}
+
+void RavennProcessor::buildMatchSlots()
+{
+    matchMode = false;
+    if (! preMatch.isValid()) return;
+    const auto full = apvts.copyState();
+    auto mixState = [&] (double k)
+    {
+        auto st = full.createCopy();
+        for (auto* prm : getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+            {
+                const auto id = rp->getParameterID();
+                auto ca = preMatch.getChildWithProperty ("id", id), cc = full.getChildWithProperty ("id", id);
+                auto cs = st.getChildWithProperty ("id", id);
+                if (! ca.isValid() || ! cc.isValid() || ! cs.isValid()) continue;
+                const float a = (float) ca.getProperty ("value"), c = (float) cc.getProperty ("value");
+                float v;
+                if (rp->getNumSteps() <= 16) v = k < 0.6 ? a : c;          // choix / boutons
+                else v = rp->convertFrom0to1 (juce::jlimit (0.f, 1.f, rp->convertTo0to1 (a + (float) k * (c - a))));
+                cs.setProperty ("value", v, nullptr);
+            }
+        return st;
+    };
+    abState[0] = preMatch.createCopy();   // A : ton reglage d'avant
+    abState[1] = mixState (0.5);          // B : leger
+    abState[3] = mixState (1.4);          // D : pousse
+    abSlot = 2;                           // C : fidele a la reference (reglage actuel)
+    abState[2] = full;
+}
+
+std::vector<RavennProcessor::Change> RavennProcessor::getLastChanges() const
+{
+    std::vector<Change> out;
+    if (! hasLastChanges()) return out;
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+        {
+            auto a = changesBefore.getChildWithProperty ("id", rp->getParameterID());
+            auto b = changesAfter.getChildWithProperty ("id", rp->getParameterID());
+            if (! a.isValid() || ! b.isValid()) continue;
+            const float va = (float) a.getProperty ("value"), vb = (float) b.getProperty ("value");
+            if (std::abs (rp->convertTo0to1 (va) - rp->convertTo0to1 (vb)) < 0.002f) continue;
+            auto txt = [&] (float v) { auto s = rp->getText (rp->convertTo0to1 (v), 32); auto l = rp->getLabel(); return l.isNotEmpty() && ! s.endsWith (l) ? s + " " + l : s; };
+            out.push_back ({ rp->getName (40), txt (va), txt (vb) });
+        }
+    return out;
+}
+
+void RavennProcessor::applyAutoStem()
+{
+    const auto& st = amStats;
+    const double nS = (double) juce::jmax<long long> (1, st.n);
+    amInLufs = (float) toLufs (st.kSum / nS);
+    const double peakDb = 20.0 * std::log10 (std::max (st.peak, 1e-9));
+    const double plr = peakDb - amInLufs;
+    double octTot = 1e-20;
+    for (auto v : st.oct) octTot += v;
+    auto octRel = [&] (int b) { return 10.0 * std::log10 (std::max (st.oct[(size_t) b], 1e-20) / octTot); };
+    const double sibRms = std::sqrt (st.sibE / nS);
+    const double sibCrest = 20.0 * std::log10 (std::max (st.sibMax, 1e-9) / std::max (sibRms, 1e-9));
+    const double airRel = octRel (9) + octRel (8) * 0.5;
+
+    const double k = stemIntensity == 0 ? 0.6 : (stemIntensity == 2 ? 1.5 : 1.0);
+    const bool rap = stemStyle == styleRap, pop = stemStyle == stylePop, electro = stemStyle == styleElectro,
+               rock = stemStyle == styleRock, afro = stemStyle == styleAfro;
+
+    changesBefore = apvts.copyState();
+    undo.beginNewTransaction ("Auto stem");
+    static const juce::StringArray keep { "amTarget", "noLatency", "os", "dither", "bypass" };
+    std::vector<std::pair<juce::String, float>> v;
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+            if (! keep.contains (rp->getParameterID()))
+                v.push_back ({ rp->getParameterID(), rp->convertFrom0to1 (rp->getDefaultValue()) });
+    auto set = [&] (const char* id, double value) { v.push_back ({ id, (float) value }); };
+    auto cl = [] (double x, double lo, double hi) { return juce::jlimit (lo, hi, x); };
+
+    // base commune : une piste n'est pas maximisee, son volume est conserve
+    set ("body", 0); set ("autoGain", 1); set ("limOn", 1); set ("limCeil", -1); set ("limTP", 1);
+    set ("clipShape", 1); set ("clipKnee", 45);
+    if (p.noLatency->load() < 0.5f) set ("os", 2);
+    juce::String what;
+
+    switch (stemType)
+    {
+        case stemDrums:
+            what = "drums";
+            set ("punch", cl ((25 + (rap || afro ? 10 : 0)) * k, 0, 70));
+            set ("glueOn", 1); set ("glueThr", -14); set ("glueRatio", 2); set ("glueAtt", 4); set ("glueRel", 4);
+            set ("glueHpf", 2); set ("glueMix", cl (60 * k, 20, 100));
+            set ("clip", cl (3 * k, 0, 8));
+            set ("satDrive1", cl (4 * k, 0, 12)); set ("satStyle1", 1);
+            set ("ott", electro ? 30 * k : 12 * k);
+            set ("mouth", cl (15 * k, 0, 40)); set ("lowCut", 30); set ("monoBass", 1); set ("monoFreq", 120);
+            set ("airHigh", airRel < -14 ? cl (25 * k, 0, 50) : 10); set ("imgHigh", 110);
+            break;
+        case stemBass:
+            what = "basse / 808";
+            set ("monoBass", 1); set ("monoFreq", 200); set ("imgMid", 70);
+            set ("depth", cl ((rap ? 35 : 20) * k, 0, 70));
+            set ("satDrive1", cl (5 * k, 0, 14)); set ("satStyle1", 1);
+            set ("satDrive2", cl (4 * k, 0, 12)); set ("satStyle2", 2);   // harmoniques audibles sur petites enceintes
+            set ("mbOn", 1); set ("mbAuto", 1); set ("mbThr1", -20); set ("mbRatio1", cl (3 * k, 1.5, 6));
+            set ("clip", cl (2 * k, 0, 6)); set ("lowCut", 25); set ("analog", 20);
+            break;
+        case stemLeadVox:
+            what = "voix lead";
+            set ("lowCut", rock ? 100 : (rap ? 80 : 90));
+            set ("dsAuto", 1); set ("dsRange", cl (6 * k, 3, 10)); set ("dsFreq", 6000);
+            set ("voice", cl (2.5 * k, 0, 5)); set ("voiceFreq", pop ? 3200 : (rap ? 2800 : 3000)); set ("voiceQ", 0.9);
+            set ("dynFreq1", 260); set ("dynQ1", 1.2); set ("dynThr1", -32); set ("dynRange1", -4);
+            set ("airHigh", cl ((pop ? 40 : 28) * k, 0, 60));
+            set ("glueOn", 1); set ("glueThr", -16); set ("glueRatio", 1); set ("glueAtt", 3); set ("glueRel", 4); set ("glueMix", cl (70 * k, 30, 100));
+            set ("satDrive2", cl (3 * k, 0, 9)); set ("satStyle2", rock ? 1 : 2);
+            set ("stabilize", cl (15 * k, 0, 40)); set ("specTarget", 9);
+            set ("space", cl (8 * k, 0, 25));
+            if (sibCrest > 17) set ("dsRange", cl (8 * k, 4, 12));
+            break;
+        case stemBackVox:
+            what = "voix backs";
+            set ("lowCut", 150); set ("dsAuto", 1); set ("dsRange", cl (7 * k, 3, 12));
+            set ("width", cl (100 + 40 * k, 100, 180)); set ("depth3d", cl (30 * k, 0, 60)); set ("depth3dFreq", 1200);
+            set ("space", cl (22 * k, 0, 50)); set ("airHigh", cl (30 * k, 0, 55));
+            set ("glueOn", 1); set ("glueThr", -18); set ("glueRatio", 2); set ("glueRel", 4); set ("glueMix", 80);
+            set ("voice", -1); set ("voiceFreq", 2500); set ("highCut", 16000);
+            break;
+        case stemSynths:
+            what = "synthes / instrus";
+            set ("lowCut", electro ? 60 : 100);
+            set ("width", cl (100 + 20 * k, 100, 160)); set ("depth3d", cl (25 * k, 0, 55)); set ("imgHigh", cl (100 + 30 * k, 100, 170));
+            set ("airMid", cl (15 * k, 0, 40)); set ("satDrive2", cl (4 * k, 0, 10));
+            set ("stabilize", cl (15 * k, 0, 35)); set ("ott", electro ? 25 * k : 10 * k);
+            break;
+        case stemGuitars:
+            what = "guitares";
+            set ("lowCut", 80); set ("highCut", 14000);
+            set ("dynFreq2", 2800); set ("dynQ2", 1.5); set ("dynThr2", -28); set ("dynRange2", -4);
+            set ("satDrive2", cl ((rock ? 6 : 4) * k, 0, 12)); set ("satStyle2", 1);
+            set ("width", cl (100 + 15 * k, 100, 150));
+            set ("glueOn", 1); set ("glueThr", -16); set ("glueRatio", 1); set ("glueMix", 60);
+            break;
+        case stemPiano:
+            what = "piano / claviers";
+            set ("lowCut", 40);
+            set ("glueOn", 1); set ("glueThr", -18); set ("glueRatio", 0); set ("glueMix", 50);
+            set ("airHigh", cl (20 * k, 0, 45)); set ("space", cl (15 * k, 0, 35));
+            set ("charType", 1); set ("charAmt", cl (25 * k, 0, 60)); set ("width", cl (100 + 10 * k, 100, 140));
+            break;
+        default: break;
+    }
+    // petites dynamiques deja ecrasees : on ne pousse pas plus
+    if (plr < 8.0) set ("punch", 0);
+
+    for (auto& [id, val] : v) setTreeValue (id, val, &undo);
+    undo.beginNewTransaction();
+    changesAfter = apvts.copyState();
+
+    static const char* styles[] = { "rap / trap", "pop", "electro", "rock", "afro", "autre" };
+    static const char* inten[] = { "leger", "normal", "fort" };
+    amReport = juce::String::fromUTF8 ("Stem ") + what + " · " + styles[stemStyle] + " · " + inten[stemIntensity]
+             + juce::String::fromUTF8 (" · entrée ") + juce::String (amInLufs, 1) + " LUFS (volume conservé)";
+}
+
+//==============================================================================
 // LINK : In et Clipper bougent ensemble en sens inverse (thread message, 20 Hz).
 // On tourne l'un, l'autre suit : le niveau reste le meme, seule la densite change.
+void RavennProcessor::setTreeValue (const juce::String& id, float value, juce::UndoManager* um)
+{
+    if (auto* rp = apvts.getParameter (id))
+    {
+        auto child = apvts.state.getChildWithProperty ("id", id);
+        const float vv = rp->convertFrom0to1 (rp->convertTo0to1 (value));
+        if (child.isValid()) child.setProperty ("value", vv, um);
+        else rp->setValueNotifyingHost (rp->convertTo0to1 (value));
+    }
+}
+
 void RavennProcessor::linkTick()
 {
+    // AUTO DE-ESSER : les potards THRESHOLD et FREQ suivent ce que l'auto a trouve
+    if (p.dsAuto->load() > 0.5f)
+    {
+        const float th = juce::jlimit (-60.f, 0.f, dsThrNow.load()), fr = juce::jlimit (2500.f, 12000.f, dsFreqNow.load());
+        if (std::abs (th - p.dsThr->load()) > 0.5f) setTreeValue ("dsThr", th, nullptr);
+        if (std::abs (fr - p.dsFreq->load()) > p.dsFreq->load() * 0.03f) setTreeValue ("dsFreq", fr, nullptr);
+    }
     const bool on = p.link->load() > 0.5f;
     const float in = p.in->load(), clip = p.clip->load();
     if (on && linkWasOn)

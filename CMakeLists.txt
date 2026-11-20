@@ -6,7 +6,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
 
-project(ravenn VERSION 1.6.0)
+project(ravenn VERSION 1.7.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,7 +61,8 @@ juce_add_binary_data(ravennAssets SOURCES assets/raven.png assets/cover.jpg)
 set(RAVENN_SOURCES
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
-    Source/PresetManager.cpp)
+    Source/PresetManager.cpp
+    Source/Lang.cpp)
 
 target_sources(ravenn PRIVATE ${RAVENN_SOURCES})
 

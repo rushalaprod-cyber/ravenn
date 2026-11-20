@@ -8,7 +8,7 @@ using ui::tr;
 
 namespace
 {
-    constexpr float baseW = 1240.f, baseH = 800.f;
+    constexpr float baseW = 1240.f, baseH = 880.f;
 
     // Cadre "fer forge" : fond noir translucide (la cover transparait), filet
     // acier, equerres aux coins.
@@ -268,8 +268,27 @@ void RavennLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, 
     col = col.withMultipliedAlpha (b.isEnabled() ? 1.f : 0.4f);
     g.setColour (col);
     const float h = (float) b.getHeight();
-    g.setFont (ui::font (jlimit (8.f, 16.f, h * 0.36f), true, 0.08f));
-    g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (4, 2), Justification::centred, 1, 0.7f);
+    auto f = ui::font (jlimit (8.f, 16.f, h * 0.36f), true, 0.08f);
+    // marges confortables : le texte ne colle jamais aux bords. Sur un petit bouton, la police
+    // retrecit d'abord (jusqu'a 7 px) plutot que de couper le texte en "H...".
+    const float w = (float) b.getWidth();
+    int padX = jmax (6, roundToInt (h * 0.28f));
+    const int padY = jmax (2, roundToInt (h * 0.12f));
+    const auto text = b.getButtonText();
+    auto textW = [&] { GlyphArrangement ga; ga.addLineOfText (f, text, 0.f, 0.f); return ga.getBoundingBox (0, -1, true).getWidth(); };
+    float tw = textW();
+    if (tw > w - 2.f * (float) padX)
+    {
+        padX = jmax (3, roundToInt (h * 0.14f));
+        const float avail = w - 2.f * (float) padX;
+        if (tw > avail && tw > 0.f)
+        {
+            f = f.withHeight (jmax (7.f, f.getHeight() * avail / tw));
+            tw = textW();
+        }
+    }
+    g.setFont (f);
+    g.drawFittedText (text, b.getLocalBounds().reduced (padX, padY), Justification::centred, 1, 0.7f);
 }
 
 void RavennLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box)
@@ -322,6 +341,7 @@ NeonKnob::NeonKnob (juce::AudioProcessorValueTreeState& s, const juce::String& i
     slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     slider.setColour (juce::Slider::rotarySliderFillColourId, c);
     slider.setTooltip (tip);
+    slider.getProperties().set ("title", t);
     slider.setMouseDragSensitivity (220);
     addAndMakeVisible (slider);
 
@@ -358,6 +378,7 @@ Segmented::Segmented (juce::AudioProcessorValueTreeState& s, const juce::String&
         auto* b = buttons.add (new juce::TextButton (labels[i]));
         b->setColour (juce::TextButton::buttonOnColourId, c);
         b->setTooltip (tip);
+        b->getProperties().set ("title", prm->getName (40));
         b->onClick = [this, i] { attachment->setValueAsCompleteGesture ((float) i); };
         addAndMakeVisible (b);
     }
@@ -474,6 +495,7 @@ ChoiceBox::ChoiceBox (juce::AudioProcessorValueTreeState& s, const juce::String&
     if (auto* prm = dynamic_cast<juce::AudioParameterChoice*> (s.getParameter (id)))
         box.addItemList (prm->choices, 1);
     box.setTooltip (tip);
+    if (auto* prm = s.getParameter (id)) box.getProperties().set ("title", prm->getName (40));
     box.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (box);
     att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (s, id, box);
@@ -903,6 +925,75 @@ void Spectrum::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheel
     else Component::mouseWheelMove (e, w);
 }
 //==============================================================================
+StereoView::StereoView (RavennProcessor& p) : proc (p)
+{
+    const char* names[3] = { "2D", "3D", "WF" };
+    const char* tips[3] = { "Vectorscope classique (gauche / droite).",
+                            "Nuage stéréo en 3D : largeur, centre et profondeur = temps. Glisse pour le faire pivoter.",
+                            "Cascade 3D : le spectre défile en profondeur, la couleur montre la largeur stéréo." };
+    for (int i = 0; i < 3; ++i)
+    {
+        auto* b = modeBtns.add (new juce::TextButton (names[i]));
+        b->setColour (juce::TextButton::buttonOnColourId, ui::violet);
+        b->setTooltip (ui::tr (tips[i]));
+        b->onClick = [this, i] { mode = i; for (int k = 0; k < modeBtns.size(); ++k) modeBtns[k]->setToggleState (k == mode, juce::dontSendNotification); };
+        addAndMakeVisible (b);
+    }
+    modeBtns[0]->setToggleState (true, juce::dontSendNotification);
+    fft = std::make_unique<juce::dsp::FFT> (10);
+    startTimerHz (30);
+}
+
+void StereoView::resized()
+{
+    const float s = (float) getWidth() / 196.f;
+    auto r = getLocalBounds().reduced (juce::roundToInt (8 * s)).removeFromTop (juce::roundToInt (20 * s)).removeFromRight (juce::roundToInt (84 * s));
+    for (auto* b : modeBtns) b->setBounds (r.removeFromLeft (r.getWidth() / juce::jmax (1, (int) (modeBtns.size() - modeBtns.indexOf (b)))));
+}
+
+void StereoView::mouseDrag (const juce::MouseEvent& e)
+{
+    yaw += (float) e.getDistanceFromDragStartX() * 0.0006f;
+    pitch = juce::jlimit (-1.2f, 1.2f, pitch + (float) e.getDistanceFromDragStartY() * 0.0006f);
+}
+
+void StereoView::timerCallback()
+{
+    autoSpin += 0.004f;
+    if (mode == 2)
+    {
+        // cascade : FFT du Mid et du Side, 48 bandes log, 40 lignes d'historique
+        constexpr int N = 1024, R = 8192;
+        const int w0 = proc.specWrite.load (std::memory_order_acquire);
+        std::vector<float> m ((size_t) N * 2, 0.f), sd ((size_t) N * 2, 0.f);
+        for (int i = 0; i < N; ++i)
+        {
+            const int idx = (w0 - N + i + R) & (R - 1);
+            const float win = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) (N - 1));
+            m[(size_t) i] = 0.5f * (proc.stereoL[(size_t) idx] + proc.stereoR[(size_t) idx]) * win;
+            sd[(size_t) i] = 0.5f * (proc.stereoL[(size_t) idx] - proc.stereoR[(size_t) idx]) * win;
+        }
+        fft->performFrequencyOnlyForwardTransform (m.data());
+        fft->performFrequencyOnlyForwardTransform (sd.data());
+        const double fs = proc.getSampleRate() > 0 ? proc.getSampleRate() : 48000.0;
+        std::array<float, 48> lv {}, wd {};
+        for (int b = 0; b < 48; ++b)
+        {
+            const float f0 = 30.f * std::pow (600.f, (float) b / 48.f), f1 = 30.f * std::pow (600.f, (float) (b + 1) / 48.f);
+            const int k0 = juce::jlimit (1, N / 2 - 1, (int) (f0 * N / fs)), k1 = juce::jlimit (k0, N / 2 - 1, (int) (f1 * N / fs));
+            float em = 0, es = 0;
+            for (int k = k0; k <= k1; ++k) { em += m[(size_t) k] * m[(size_t) k]; es += sd[(size_t) k] * sd[(size_t) k]; }
+            lv[(size_t) b] = juce::Decibels::gainToDecibels (std::sqrt ((em + es) / (float) (k1 - k0 + 1)) * 2.f / N, -100.f)
+                           + 3.f * std::log2 (f0 / 1000.f);
+            wd[(size_t) b] = es / (em + es + 1e-12f);
+        }
+        history.insert (history.begin(), lv);
+        widthHist.insert (widthHist.begin(), wd);
+        if (history.size() > 40) { history.pop_back(); widthHist.pop_back(); }
+    }
+    repaint();
+}
+
 void StereoView::paint (juce::Graphics& g)
 {
     using namespace juce;
@@ -910,8 +1001,15 @@ void StereoView::paint (juce::Graphics& g)
     auto r = getLocalBounds().toFloat();
     drawPanelFrame (g, r, ui::violet, s);
     drawPanelTitle (g, r, "STEREO", ui::violet, s);
-
     auto a = r.reduced (12.f * s).withTrimmedTop (22.f * s);
+    if (mode == 1) paintCloud (g, a, s);
+    else if (mode == 2) paintWaterfall (g, a, s);
+    else paint2D (g, a, s);
+}
+
+void StereoView::paint2D (juce::Graphics& g, juce::Rectangle<float> a, float s)
+{
+    using namespace juce;
     auto corrBar = a.removeFromBottom (14.f * s);
     a.removeFromBottom (6.f * s);
     const float side = jmin (a.getWidth(), a.getHeight());
@@ -919,7 +1017,6 @@ void StereoView::paint (juce::Graphics& g)
     const auto c = sq.getCentre();
     const float rad = side * 0.5f;
 
-    // grille : demi-disque, axes M (vertical) et L / R (diagonales)
     g.setColour (ui::edge.withAlpha (0.7f));
     g.drawEllipse (sq.reduced (1.f), 1.f);
     g.drawVerticalLine ((int) c.x, sq.getY(), sq.getBottom());
@@ -930,7 +1027,6 @@ void StereoView::paint (juce::Graphics& g)
     g.drawText ("L", Rectangle<float> (sq.getX(), sq.getY(), 14.f * s, 12.f * s), Justification::centred);
     g.drawText ("R", Rectangle<float> (sq.getRight() - 14.f * s, sq.getY(), 14.f * s, 12.f * s), Justification::centred);
 
-    // nuage de points (derniers 2048 echantillons), niveau normalise
     const int w0 = proc.specWrite.load (std::memory_order_acquire);
     constexpr int N = 2048, R = 8192;
     float pk = 1e-6f;
@@ -955,7 +1051,6 @@ void StereoView::paint (juce::Graphics& g)
     corrDisp += 0.2f * (corr - corrDisp);
     widthDisp += 0.2f * ((float) (mm > 1e-12 ? 10.0 * std::log10 ((ss + 1e-12) / mm) : -60.0) - widthDisp);
 
-    // correlation : -1 (opposition de phase) a +1 (mono)
     g.setColour (ui::track);
     g.fillRect (corrBar);
     const float cx = corrBar.getCentreX(), xv = corrBar.getX() + corrBar.getWidth() * (corrDisp + 1.f) * 0.5f;
@@ -963,10 +1058,92 @@ void StereoView::paint (juce::Graphics& g)
     g.fillRect (Rectangle<float> (jmin (cx, xv), corrBar.getY(), std::abs (xv - cx), corrBar.getHeight()));
     g.setColour (ui::text);
     g.setFont (ui::font (8.5f * s, true));
-    g.drawText ("CORR " + String (corrDisp, 2), corrBar, Justification::centredLeft);
-    g.drawText ("S/M " + String (widthDisp, 1) + " dB", corrBar, Justification::centredRight);
+    g.drawText ("CORR " + String (corrDisp, 2), corrBar.reduced (3.f, 0), Justification::centredLeft);
+    g.drawText ("S/M " + String (widthDisp, 1) + " dB", corrBar.reduced (3.f, 0), Justification::centredRight);
 }
 
+void StereoView::paintCloud (juce::Graphics& g, juce::Rectangle<float> a, float s)
+{
+    using namespace juce;
+    const auto c = a.getCentre();
+    const float sc = jmin (a.getWidth(), a.getHeight()) * 0.42f;
+    const float y = yaw + autoSpin, cy = std::cos (y), sy = std::sin (y), cp = std::cos (pitch), sp = std::sin (pitch);
+    auto project = [&] (float X, float Y, float Z, float& px, float& py, float& depth)
+    {
+        const float x1 = X * cy + Z * sy, z1 = -X * sy + Z * cy;     // lacet
+        const float y1 = Y * cp - z1 * sp, z2 = Y * sp + z1 * cp;   // tangage
+        const float persp = 2.6f / (2.6f + z2);
+        px = c.x + x1 * sc * persp; py = c.y - y1 * sc * persp; depth = z2;
+    };
+    // cube de repere
+    g.setColour (ui::edge.withAlpha (0.8f));
+    const float E[8][3] = { {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},{-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1} };
+    const int ed[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
+    for (auto& e : ed)
+    {
+        float x0, y0, d0, x1, y1, d1;
+        project (E[e[0]][0], E[e[0]][1], E[e[0]][2], x0, y0, d0);
+        project (E[e[1]][0], E[e[1]][1], E[e[1]][2], x1, y1, d1);
+        g.drawLine (x0, y0, x1, y1, 0.6f);
+    }
+    const int w0 = proc.specWrite.load (std::memory_order_acquire);
+    constexpr int N = 1536, R = 8192;
+    float pk = 1e-6f;
+    for (int i = 0; i < N; ++i)
+    {
+        const int idx = (w0 - N + i + R) & (R - 1);
+        pk = jmax (pk, std::abs (proc.stereoL[(size_t) idx]), std::abs (proc.stereoR[(size_t) idx]));
+    }
+    for (int i = 0; i < N; i += 2)
+    {
+        const int idx = (w0 - N + i + R) & (R - 1);
+        const float L = proc.stereoL[(size_t) idx] / pk, Rr = proc.stereoR[(size_t) idx] / pk;
+        const float S = (L - Rr) * 0.707f, M = (L + Rr) * 0.707f, Z = 1.f - 2.f * (float) i / (float) N;   // temps
+        float px, py, d;
+        project (S, M * 0.9f, Z, px, py, d);
+        const float age = (float) i / (float) N;
+        g.setColour (ui::cyan.interpolatedWith (Colours::white, age).withAlpha (0.15f + 0.6f * age));
+        const float sz = (1.2f + 1.4f * age) * s;
+        g.fillRect (px, py, sz, sz);
+    }
+    g.setColour (ui::dim);
+    g.setFont (ui::font (8.f * s, true));
+    g.drawText (ui::tr ("glisse pour tourner"), a.removeFromBottom (11.f * s), Justification::centred);
+}
+
+void StereoView::paintWaterfall (juce::Graphics& g, juce::Rectangle<float> a, float s)
+{
+    using namespace juce;
+    const int rows = (int) history.size();
+    if (rows == 0) return;
+    const float depthX = a.getWidth() * 0.28f, depthY = a.getHeight() * 0.42f;
+    const float baseW = a.getWidth() - depthX, h = a.getHeight() - depthY;
+    for (int r = rows - 1; r >= 0; --r)
+    {
+        const float t = (float) r / 40.f;
+        const float ox = a.getX() + depthX * t, oy = a.getBottom() - depthY * t;
+        Path line, fill;
+        for (int b = 0; b < 48; ++b)
+        {
+            const float x = ox + baseW * (float) b / 47.f;
+            const float v = jlimit (0.f, 1.f, (history[(size_t) r][(size_t) b] + 90.f) / 70.f);
+            const float yy = oy - v * h * 0.75f;
+            if (b == 0) { line.startNewSubPath (x, yy); fill.startNewSubPath (x, oy); fill.lineTo (x, yy); }
+            else { line.lineTo (x, yy); fill.lineTo (x, yy); }
+        }
+        fill.lineTo (ox + baseW, oy); fill.closeSubPath();
+        g.setColour (Colour (0xff04070b).withAlpha (0.92f));
+        g.fillPath (fill);
+        // couleur : bleu = mono, blanc = large (moyenne de largeur de la ligne)
+        float wsum = 0; for (auto v : widthHist[(size_t) r]) wsum += v;
+        const float wd = jlimit (0.f, 1.f, wsum / 48.f * 2.5f);
+        g.setColour (ui::violet.interpolatedWith (Colours::white, wd).withAlpha (1.f - 0.85f * t));
+        g.strokePath (line, PathStrokeType (1.f));
+    }
+    g.setColour (ui::dim);
+    g.setFont (ui::font (8.f * s, true));
+    g.drawText (ui::tr ("bleu = mono · blanc = large"), a.removeFromTop (11.f * s), Justification::centredLeft);
+}
 //==============================================================================
 void LimiterView::paint (juce::Graphics& g)
 {
@@ -1176,6 +1353,13 @@ AutoMasterPanel::AutoMasterPanel (RavennProcessor& p)
     };
     addAndMakeVisible (goBtn);
     addAndMakeVisible (target);
+    stemBtn.setButtonText ("AUTO STEM");
+    stemBtn.setTooltip (tr ("Auto master pour une piste séparée (drums, basse, voix…) : ravenn te pose 3 questions avant d'agir."));
+    stemBtn.onClick = [this] { if (onStem) onStem(); };
+    changesBtn.setButtonText ("CHANGES");
+    changesBtn.setTooltip (tr ("Montre tous les réglages que le dernier auto a modifiés, avant → après."));
+    changesBtn.onClick = [this] { if (onChanges) onChanges(); };
+    addAndMakeVisible (stemBtn); addAndMakeVisible (changesBtn);
     timerCallback();
     startTimerHz (30);
 }
@@ -1189,7 +1373,7 @@ void AutoMasterPanel::timerCallback()
     const bool running = st == RavennProcessor::amListening || st == RavennProcessor::amAnalyzed
                       || st == RavennProcessor::amRefining || st == RavennProcessor::amRefined;
 
-    goBtn.setButtonText (running ? "ANNULER" : (st == RavennProcessor::amDone ? "RELANCER" : "AUTO MASTER"));
+    goBtn.setButtonText (running ? tr ("ANNULER") : (st == RavennProcessor::amDone ? tr ("RELANCER") : juce::String ("AUTO MASTER")));
     goBtn.setToggleState (true, juce::dontSendNotification);
 
     const bool refTarget = (int) proc.apvts.getRawParameterValue ("amTarget")->load() == 8;
@@ -1223,7 +1407,11 @@ void AutoMasterPanel::resized()
     a.removeFromTop (juce::roundToInt (24 * s));
     target.setBounds (a.removeFromTop (juce::roundToInt (30 * s)));
     a.removeFromTop (juce::roundToInt (12 * s));
-    goBtn.setBounds (a.removeFromTop (juce::roundToInt (48 * s)));
+    goBtn.setBounds (a.removeFromTop (juce::roundToInt (44 * s)));
+    a.removeFromTop (juce::roundToInt (22 * s));
+    auto row = a.removeFromTop (juce::roundToInt (30 * s));
+    stemBtn.setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (juce::roundToInt (2 * s), 0));
+    changesBtn.setBounds (row.reduced (juce::roundToInt (2 * s), 0));
 }
 
 void AutoMasterPanel::paint (juce::Graphics& g)
@@ -1252,7 +1440,7 @@ void AutoMasterPanel::paint (juce::Graphics& g)
         g.fillRoundedRectangle (pb.withWidth (pb.getWidth() * jlimit (0.f, 1.f, progress)), 2.5f * s);
     }
 
-    auto txt = getLocalBounds().toFloat().reduced (14.f * s).withTop (pb.getBottom() + 8.f * s);
+    auto txt = getLocalBounds().toFloat().reduced (14.f * s).withTop ((float) stemBtn.getBottom() + 6.f * s);
     g.setColour (st == RavennProcessor::amDone ? ui::green : ui::dim);
     g.setFont (ui::font (10.5f * s, false));
     g.drawFittedText (status, txt.toNearestInt(), Justification::topLeft, 6, 0.8f);
@@ -1440,6 +1628,427 @@ void MultibandPage::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+// VUES 1.7
+void FreqRangeView::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colours::black.withAlpha (0.5f));
+    g.fillRoundedRectangle (r, 3.f);
+    g.setColour (ui::edge);
+    g.drawRoundedRectangle (r.reduced (0.5f), 3.f, 1.f);
+    auto p = r.reduced (6.f, 4.f).withTrimmedBottom (10.f);
+    auto xOf = [&] (float f) { return p.getX() + p.getWidth() * std::log (jlimit (20.f, 20000.f, f) / 20.f) / std::log (1000.f); };
+    g.setFont (ui::font (8.f, true));
+    for (float f : { 100.f, 1000.f, 10000.f })
+    {
+        g.setColour (ui::edge.withAlpha (0.8f));
+        g.drawVerticalLine ((int) xOf (f), p.getY(), p.getBottom());
+        g.setColour (ui::dim);
+        g.drawText (f >= 1000.f ? String ((int) (f / 1000.f)) + "k" : String ((int) f), Rectangle<float> (xOf (f) - 15.f, p.getBottom(), 30.f, 10.f), Justification::centred);
+    }
+    auto P = [&] (const String& id) { return id.isEmpty() ? 0.f : st.getRawParameterValue (id)->load(); };
+    Path curve;
+    const float mid = p.getCentreY();
+    if (bell)
+    {
+        const float fc = P (a), qq = jmax (0.2f, P (q)), gain = gainId.isNotEmpty() ? P (gainId) : 1.f;
+        const float amp = gainId.isNotEmpty() ? jlimit (-1.f, 1.f, gain / 6.f) : 0.8f;
+        for (float x = p.getX(); x <= p.getRight(); x += 2.f)
+        {
+            const float f = 20.f * std::pow (1000.f, (x - p.getX()) / p.getWidth());
+            const float oct = std::log2 (f / jmax (20.f, fc));
+            const float y = mid - amp * p.getHeight() * 0.42f * std::exp (-oct * oct * qq * qq * 1.4f);
+            if (x == p.getX()) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
+        }
+        g.setColour (ui::red.withAlpha (0.9f));
+        g.strokePath (curve, PathStrokeType (1.6f));
+        g.setColour (ui::red.withAlpha (0.12f));
+        Path fill (curve); fill.lineTo (p.getRight(), mid); fill.lineTo (p.getX(), mid); fill.closeSubPath();
+        g.fillPath (fill);
+        g.setColour (ui::text);
+        g.drawText ((fc >= 1000.f ? String (fc / 1000.f, 2) + " kHz" : String ((int) fc) + " Hz") + "  Q " + String (qq, 2),
+                    p.removeFromTop (11.f), Justification::centredRight);
+    }
+    else
+    {
+        const float lo = P (a), hi = P (b), qq = jmax (0.2f, P (q));
+        const float x0 = xOf (lo), x1 = xOf (hi);
+        g.setGradientFill (ColourGradient (ui::violet.withAlpha (0.45f), 0, p.getY(), ui::violet.withAlpha (0.08f), 0, p.getBottom(), false));
+        const float soft = 18.f / qq;
+        Path band;
+        band.startNewSubPath (x0 - soft, p.getBottom());
+        band.cubicTo (x0 - soft * 0.3f, p.getBottom(), x0, p.getY() + 6.f, x0 + soft * 0.5f, p.getY() + 6.f);
+        band.lineTo (x1 - soft * 0.5f, p.getY() + 6.f);
+        band.cubicTo (x1, p.getY() + 6.f, x1 + soft * 0.3f, p.getBottom(), x1 + soft, p.getBottom());
+        band.closeSubPath();
+        g.fillPath (band);
+        g.setColour (ui::violet);
+        g.strokePath (band, PathStrokeType (1.2f));
+        g.setColour (ui::text);
+        auto fmt = [] (float f) { return f >= 1000.f ? String (f / 1000.f, 1) + "k" : String ((int) f); };
+        g.drawText (fmt (lo) + " - " + fmt (hi) + " Hz  Q " + String (qq, 2), p.removeFromTop (11.f), Justification::centredRight);
+    }
+}
+
+void DeEsserView::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colours::black.withAlpha (0.55f));
+    g.fillRect (r);
+    g.setColour (ui::edge);
+    g.drawRect (r, 1.f);
+    auto p = r.reduced (4.f);
+    auto yOf = [&] (float db) { return p.getY() + p.getHeight() * jlimit (0.f, 1.f, -db / 60.f); };
+    constexpr int N = 512;
+    const int w0 = proc.dsViewWrite.load (std::memory_order_acquire);
+    const float dx = p.getWidth() / (float) (N - 1);
+    Path lvl, gr;
+    lvl.startNewSubPath (p.getX(), p.getBottom());
+    gr.startNewSubPath (p.getX(), p.getY());
+    for (int i = 0; i < N; ++i)
+    {
+        const int idx = (w0 + i) % N;
+        const float x = p.getX() + (float) i * dx;
+        lvl.lineTo (x, yOf (proc.dsViewIn[(size_t) idx].load (std::memory_order_relaxed)));
+        gr.lineTo (x, p.getY() + p.getHeight() * jlimit (0.f, 1.f, -proc.dsViewGr[(size_t) idx].load (std::memory_order_relaxed) / 24.f));
+    }
+    lvl.lineTo (p.getRight(), p.getBottom()); lvl.closeSubPath();
+    gr.lineTo (p.getRight(), p.getY()); gr.closeSubPath();
+    g.setGradientFill (ColourGradient (ui::cyan.withAlpha (0.6f), 0, p.getY(), ui::blue.withAlpha (0.1f), 0, p.getBottom(), false));
+    g.fillPath (lvl);
+    g.setColour (ui::red.withAlpha (0.75f));
+    g.fillPath (gr);
+    const float th = proc.dsThrNow.load();
+    g.setColour (ui::amber);
+    g.drawHorizontalLine ((int) yOf (th), p.getX(), p.getRight());
+    g.setFont (ui::font (9.f, true));
+    g.drawText ("THRESHOLD " + String (th, 1) + " dB", Rectangle<float> (p.getRight() - 140.f, yOf (th) - 12.f, 136.f, 11.f), Justification::centredRight);
+    g.setColour (ui::text.withAlpha (0.85f));
+    const float fr = proc.dsFreqNow.load();
+    g.drawText (ui::tr ("SIFFLANTES") + "  " + String (fr / 1000.f, 1) + " kHz", p.removeFromTop (12.f), Justification::centredLeft);
+}
+
+void ClipGauge::timerCallback()
+{
+    // lecture sans voler la valeur des barres LED : on lit le GR de l'oscilloscope
+    const int w = (proc.scopeWrite.load() - 1 + RavennProcessor::scopeSize) % RavennProcessor::scopeSize;
+    const float gr = juce::jmin (0.f, proc.scopeGr[(size_t) w].load());
+    needle += (gr < needle ? 0.6f : 0.08f) * (gr - needle);
+    if (gr < hold) { hold = gr; holdT = 60; } else if (--holdT <= 0) hold += 0.05f * (0.f - hold);
+    repaint();
+}
+
+void ClipGauge::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat();
+    const float s = jmin (r.getWidth() / 240.f, r.getHeight() / 120.f);
+    auto dial = r.removeFromLeft (jmin (r.getHeight() * 1.35f, r.getWidth() * 0.55f)).reduced (6.f * s);
+    const auto c = Point<float> (dial.getCentreX(), dial.getBottom() - 6.f * s);
+    const float rad = jmin (dial.getWidth() * 0.5f, dial.getHeight()) - 4.f * s;
+    const float a0 = -MathConstants<float>::halfPi * 1.25f, a1 = MathConstants<float>::halfPi * 1.25f;
+    auto angOf = [&] (float db) { return a0 + (a1 - a0) * jlimit (0.f, 1.f, -db / 12.f); };
+    // zones : 0-3 dB (glace), 3-6 (bleu), 6-12 (blanc)
+    struct Z { float from, to; Colour col; };
+    for (auto z : { Z { 0.f, -3.f, ui::cyan }, Z { -3.f, -6.f, ui::violet }, Z { -6.f, -12.f, ui::red } })
+    {
+        Path arc;
+        arc.addCentredArc (c.x, c.y, rad, rad, 0.f, angOf (z.from), angOf (z.to), true);
+        g.setColour (z.col.withAlpha (0.35f));
+        g.strokePath (arc, PathStrokeType (5.f * s));
+    }
+    g.setFont (ui::font (8.f * s, true));
+    for (float db : { 0.f, -3.f, -6.f, -9.f, -12.f })
+    {
+        const auto pt = c.getPointOnCircumference (rad - 13.f * s, angOf (db));
+        g.setColour (ui::dim);
+        g.drawText (String ((int) db), Rectangle<float> (pt.x - 12.f, pt.y - 6.f, 24.f, 12.f), Justification::centred);
+    }
+    // maintien de crete + aiguille
+    const auto hp = c.getPointOnCircumference (rad, angOf (hold));
+    g.setColour (ui::amber);
+    g.fillEllipse (hp.x - 3.f * s, hp.y - 3.f * s, 6.f * s, 6.f * s);
+    const auto tip = c.getPointOnCircumference (rad - 2.f * s, angOf (needle));
+    g.setColour (ui::red.withAlpha (0.3f));
+    g.drawLine ({ c, tip }, 5.f * s);
+    g.setColour (Colours::white);
+    g.drawLine ({ c, tip }, 1.8f * s);
+    g.fillEllipse (c.x - 4.f * s, c.y - 4.f * s, 8.f * s, 8.f * s);
+    // lecture + activite
+    auto info = r.reduced (4.f * s, 0.f);
+    info = info.withSizeKeepingCentre (info.getWidth(), jmin (info.getHeight(), 80.f * s));
+    g.setColour (ui::text);
+    g.setFont (ui::font (jmin (20.f * s, info.getWidth() / 4.2f), true));
+    g.drawText (String (needle, 1) + " dB", info.removeFromTop (26.f * s), Justification::centredLeft);
+    g.setColour (ui::dim);
+    g.setFont (ui::font (jmin (8.5f * s, info.getWidth() / 9.f), true, 0.1f));
+    g.drawFittedText (ui::tr ("RÉDUCTION DU CLIPPER"), info.removeFromTop (24.f * s).toNearestInt(), Justification::centredLeft, 2, 0.8f);
+    info.removeFromTop (8.f * s);
+    const float act = jlimit (0.f, 1.f, proc.clipActivity.load());
+    auto bar = info.removeFromTop (8.f * s);
+    g.setColour (ui::track);
+    g.fillRect (bar);
+    g.setColour (act > 0.08f ? ui::red : ui::cyan);
+    g.fillRect (bar.withWidth (bar.getWidth() * jmin (1.f, act * 5.f)));
+    g.setColour (ui::dim);
+    g.drawFittedText (ui::tr ("ACTIVITÉ ") + String (act * 100.f, 1) + " %", info.removeFromTop (14.f * s).toNearestInt(), Justification::centredLeft, 1, 0.75f);
+}
+
+void GlueMeter::timerCallback()
+{
+    const float gr = proc.glueGrAcc.exchange (0.f);
+    needle += (gr < needle ? 0.5f : 0.06f) * (gr - needle);
+    repaint();
+}
+
+void GlueMeter::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat().reduced (8.f);
+    // cadran facon VU, fond ivoire tres sombre
+    g.setGradientFill (ColourGradient (Colour (0xff1a2230), r.getCentreX(), r.getY(), Colour (0xff070a0f), r.getCentreX(), r.getBottom(), false));
+    g.fillRoundedRectangle (r, 6.f);
+    g.setColour (ui::edge.brighter (0.4f));
+    g.drawRoundedRectangle (r, 6.f, 1.2f);
+    const auto c = Point<float> (r.getCentreX(), r.getBottom() - r.getHeight() * 0.12f);
+    const float rad = jmin (r.getWidth() * 0.45f, r.getHeight() * 0.75f);
+    const float a0 = -0.85f, a1 = 0.85f;
+    auto angOf = [&] (float db) { return a1 - (a1 - a0) * jlimit (0.f, 1.f, -db / 20.f); };
+    g.setFont (ui::font (10.f, true));
+    for (float db : { 0.f, -2.f, -4.f, -6.f, -8.f, -10.f, -14.f, -20.f })
+    {
+        const auto p0 = c.getPointOnCircumference (rad, angOf (db)), p1 = c.getPointOnCircumference (rad - 10.f, angOf (db));
+        g.setColour (db <= -10.f ? ui::red : ui::text.withAlpha (0.8f));
+        g.drawLine ({ p0, p1 }, 1.4f);
+        const auto pt = c.getPointOnCircumference (rad + 12.f, angOf (db));
+        g.drawText (String ((int) -db), Rectangle<float> (pt.x - 14.f, pt.y - 7.f, 28.f, 14.f), Justification::centred);
+    }
+    g.setColour (ui::dim);
+    g.drawText (ui::tr ("RÉDUCTION DE GAIN (dB)"), Rectangle<float> (r.getX(), c.y - rad * 0.45f, r.getWidth(), 14.f), Justification::centred);
+    const auto tip = c.getPointOnCircumference (rad - 4.f, angOf (needle));
+    g.setColour (Colours::black.withAlpha (0.5f));
+    g.drawLine ({ c.translated (2.f, 2.f), tip.translated (2.f, 2.f) }, 2.5f);
+    g.setColour (ui::red);
+    g.drawLine ({ c, tip }, 2.f);
+    g.setColour (ui::text);
+    g.fillEllipse (c.x - 6.f, c.y - 6.f, 12.f, 12.f);
+    g.setFont (ui::font (16.f, true));
+    g.drawText (String (needle, 1) + " dB", r.removeFromBottom (24.f), Justification::centred);
+}
+
+void VhsInfo::show (const juce::String& t, const juce::String& v, const juce::String& x)
+{
+    if (t == title && v == value && x == text) return;
+    title = t; value = v; text = x;
+    repaint();
+}
+
+void VhsInfo::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat();
+    // ecran : noir bleute, lignes de balayage, grain qui bouge, legere derive des couleurs
+    g.setGradientFill (ColourGradient (Colour (0xff06101c), r.getCentreX(), r.getCentreY(), Colour (0xff010204), r.getX(), r.getY(), true));
+    g.fillRoundedRectangle (r, 6.f);
+    Random rng (frame * 7919);
+    for (float y = r.getY(); y < r.getBottom(); y += 2.f)
+    {
+        g.setColour (Colours::black.withAlpha (0.25f));
+        g.fillRect (r.getX(), y, r.getWidth(), 1.f);
+    }
+    for (int i = 0; i < 90; ++i)
+    {
+        g.setColour (Colours::white.withAlpha (rng.nextFloat() * 0.07f));
+        g.fillRect (r.getX() + rng.nextFloat() * r.getWidth(), r.getY() + rng.nextFloat() * r.getHeight(), 1.f + rng.nextFloat() * 2.f, 1.f);
+    }
+    const float bandY = r.getY() + std::fmod ((float) frame * 3.f, r.getHeight());
+    g.setColour (Colours::white.withAlpha (0.03f));
+    g.fillRect (r.getX(), bandY, r.getWidth(), 6.f);
+
+    auto a = r.reduced (14.f, 8.f).withTrimmedRight ((float) langBtn.getWidth() + 8.f);
+    auto head = a.removeFromTop (20.f);
+    g.setFont (ui::font (12.f, true, 0.15f));
+    g.setColour (Colour (0xffff3b5c).withAlpha (0.8f));
+    g.drawText ((frame / 6) % 2 == 0 ? String::fromUTF8 ("● REC") : String(), head.removeFromLeft (52.f), Justification::centredLeft);
+    g.setColour (ui::cyan.withAlpha (0.9f));
+    g.drawText (String::fromUTF8 ("▶ PLAY"), head.removeFromLeft (64.f), Justification::centredLeft);
+    auto chroma = [&] (const String& s, Rectangle<float> box, float size, Justification j)
+    {
+        g.setFont (ui::font (size, true, 0.12f));
+        g.setColour (Colour (0xffff2a6d).withAlpha (0.45f)); g.drawText (s, box.translated (-1.2f, 0), j);
+        g.setColour (Colour (0xff05d9e8).withAlpha (0.45f)); g.drawText (s, box.translated (1.2f, 0), j);
+        g.setColour (Colours::white.withAlpha (0.92f));      g.drawText (s, box, j);
+    };
+    if (title.isEmpty())
+    {
+        chroma (ui::tr ("SURVOLE UN RÉGLAGE POUR VOIR À QUOI IL SERT"), head, 13.f, Justification::centredLeft);
+        return;
+    }
+    chroma (title.toUpperCase() + (value.isNotEmpty() ? "   " + value : String()), head, 14.f, Justification::centredLeft);
+    g.setFont (ui::font (12.f));
+    g.setColour (Colour (0xffcfe6ff).withAlpha (0.88f));
+    g.drawFittedText (text, a.toNearestInt(), Justification::topLeft, 3, 0.9f);
+}
+
+StemDialog::StemDialog (RavennProcessor& p) : proc (p)
+{
+    const char* types[] = { "MIX COMPLET", "DRUMS", "BASSE / 808", "VOIX LEAD", "VOIX BACKS", "SYNTHÉS / INSTRUS", "GUITARES", "PIANO / CLAVIERS" };
+    const char* styles[] = { "RAP / TRAP", "POP", "ÉLECTRO", "ROCK", "AFRO", "AUTRE" };
+    const char* ints[] = { "LÉGER", "NORMAL", "FORT" };
+    auto make = [this] (juce::OwnedArray<juce::TextButton>& arr, const char* const* names, int n, int& target)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            auto* b = arr.add (new juce::TextButton (ui::tr (names[i])));
+            b->setColour (juce::TextButton::buttonOnColourId, ui::cyan);
+            b->onClick = [this, &arr, &target, i] { target = i; select (arr, i); };
+            addAndMakeVisible (b);
+        }
+    };
+    make (typeBtns, types, 8, type);
+    make (styleBtns, styles, 6, style);
+    make (intBtns, ints, 3, intensity);
+    select (typeBtns, type); select (styleBtns, style); select (intBtns, intensity);
+    goBtn.setButtonText (ui::tr ("ANALYSER ET RÉGLER"));
+    goBtn.setColour (juce::TextButton::buttonOnColourId, ui::violet);
+    goBtn.setToggleState (true, juce::dontSendNotification);
+    goBtn.onClick = [this] { proc.startAutoStem (type, style, intensity); if (onClose) onClose(); };
+    cancelBtn.setButtonText (ui::tr ("ANNULER"));
+    cancelBtn.onClick = [this] { if (onClose) onClose(); };
+    addAndMakeVisible (goBtn); addAndMakeVisible (cancelBtn);
+}
+
+void StemDialog::select (juce::OwnedArray<juce::TextButton>& arr, int idx)
+{
+    for (int i = 0; i < arr.size(); ++i) arr[i]->setToggleState (i == idx, juce::dontSendNotification);
+}
+
+void StemDialog::resized()
+{
+    const float s = (float) getWidth() / 1240.f;
+    auto px = [s] (float v) { return juce::roundToInt (v * s); };
+    panel = getLocalBounds().withSizeKeepingCentre (px (760), px (470));
+    auto a = panel.reduced (px (24)).withTrimmedTop (px (30));
+    auto grid = [&] (juce::OwnedArray<juce::TextButton>& arr, int cols, int h)
+    {
+        a.removeFromTop (px (22));   // titre de la question
+        const int rows = (arr.size() + cols - 1) / cols;
+        auto area = a.removeFromTop (rows * (h + px (6)));
+        const int w = (area.getWidth() - px (6) * (cols - 1)) / cols;
+        for (int i = 0; i < arr.size(); ++i)
+            arr[i]->setBounds (area.getX() + (i % cols) * (w + px (6)), area.getY() + (i / cols) * (h + px (6)), w, h);
+        a.removeFromTop (px (8));
+    };
+    grid (typeBtns, 4, px (34));
+    grid (styleBtns, 6, px (32));
+    grid (intBtns, 3, px (32));
+    auto btns = a.removeFromBottom (px (44));
+    cancelBtn.setBounds (btns.removeFromLeft (px (140)));
+    goBtn.setBounds (btns.removeFromRight (px (260)));
+}
+
+void StemDialog::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colours::black.withAlpha (0.75f));
+    const float s = (float) getWidth() / 1240.f;
+    drawPanelFrame (g, panel.toFloat(), ui::violet, s);
+    drawPanelTitle (g, panel.toFloat(), "AUTO STEM", ui::violet, s);
+    g.setColour (ui::text);
+    g.setFont (ui::font (11.f * s, true, 0.2f));
+    auto lbl = [&] (juce::OwnedArray<juce::TextButton>& arr, const juce::String& t)
+    {
+        if (arr.isEmpty()) return;
+        g.drawText (t, arr[0]->getBounds().translated (0, -juce::roundToInt (20 * s)).withWidth (panel.getWidth()), juce::Justification::centredLeft);
+    };
+    lbl (typeBtns, ui::tr ("1. QUELLE PISTE ?"));
+    lbl (styleBtns, ui::tr ("2. QUEL STYLE ?"));
+    lbl (intBtns, ui::tr ("3. QUELLE INTENSITÉ ?"));
+    g.setColour (ui::dim);
+    g.setFont (ui::font (10.5f * s));
+    g.drawFittedText (ui::tr ("Lance la lecture de la piste, puis clique : ravenn écoute 6 s et règle les modules adaptés (le volume de la piste est conservé). Tout est annulable avec UNDO."),
+                      juce::Rectangle<int> (panel.getX() + juce::roundToInt (24 * s), goBtn.getY() - juce::roundToInt (48 * s), panel.getWidth() - juce::roundToInt (48 * s), juce::roundToInt (40 * s)),
+                      juce::Justification::bottomLeft, 2, 0.9f);
+}
+
+ChangesOverlay::ChangesOverlay (RavennProcessor& p) : proc (p)
+{
+    closeBtn.setButtonText (ui::tr ("FERMER"));
+    closeBtn.onClick = [this] { if (onClose) onClose(); };
+    saveBtn.setButtonText (ui::tr ("ENREGISTRER COMME PRESET"));
+    saveBtn.onClick = [this] { if (onSave) onSave(); };
+    addAndMakeVisible (closeBtn); addAndMakeVisible (saveBtn);
+    view.setViewedComponent (&list, false);
+    view.setScrollBarsShown (true, false);
+    addAndMakeVisible (view);
+}
+
+void ChangesOverlay::refresh()
+{
+    list.items = proc.getLastChanges();
+    resized();
+    repaint();
+}
+
+void ChangesOverlay::resized()
+{
+    const float s = (float) getWidth() / 1240.f;
+    auto px = [s] (float v) { return juce::roundToInt (v * s); };
+    panel = getLocalBounds().withSizeKeepingCentre (px (820), px (560));
+    auto a = panel.reduced (px (20)).withTrimmedTop (px (30));
+    auto btns = a.removeFromBottom (px (40));
+    closeBtn.setBounds (btns.removeFromRight (px (120)));
+    btns.removeFromRight (px (8));
+    saveBtn.setBounds (btns.removeFromRight (px (260)));
+    a.removeFromBottom (px (8));
+    a.removeFromTop (px (24));
+    view.setBounds (a);
+    list.setSize (a.getWidth() - 12, juce::jmax (a.getHeight(), (int) list.items.size() * 24 + 8));
+}
+
+void ChangesOverlay::List::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    float y = 4.f;
+    const float w = (float) getWidth();
+    for (size_t i = 0; i < items.size(); ++i)
+    {
+        if (i % 2 == 0) { g.setColour (Colours::white.withAlpha (0.03f)); g.fillRect (0.f, y, w, 24.f); }
+        g.setFont (ui::font (12.f, true));
+        g.setColour (ui::text);
+        g.drawText (items[i].name, Rectangle<float> (8.f, y, w * 0.42f, 24.f), Justification::centredLeft);
+        g.setFont (ui::font (12.f));
+        g.setColour (ui::dim);
+        g.drawText (items[i].before, Rectangle<float> (w * 0.44f, y, w * 0.24f, 24.f), Justification::centredRight);
+        g.setColour (ui::cyan);
+        g.drawText (String::fromUTF8 ("→"), Rectangle<float> (w * 0.68f, y, w * 0.06f, 24.f), Justification::centred);
+        g.setColour (Colours::white);
+        g.drawText (items[i].after, Rectangle<float> (w * 0.74f, y, w * 0.24f, 24.f), Justification::centredLeft);
+        y += 24.f;
+    }
+    if (items.empty())
+    {
+        g.setColour (ui::dim);
+        g.setFont (ui::font (13.f));
+        g.drawText (ui::tr ("Aucun changement enregistré : lance d'abord AUTO MASTER, AUTO STEM ou MATCH REFERENCE."), getLocalBounds(), Justification::centred);
+    }
+}
+
+void ChangesOverlay::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colours::black.withAlpha (0.75f));
+    const float s = (float) getWidth() / 1240.f;
+    drawPanelFrame (g, panel.toFloat(), ui::cyan, s);
+    drawPanelTitle (g, panel.toFloat(), "CHANGES", ui::cyan, s);
+    g.setColour (ui::dim);
+    g.setFont (ui::font (11.f * s, true));
+    g.drawText (juce::String (list.items.size()) + ui::tr (" réglages modifiés · avant → après · tout est annulable avec UNDO"),
+                panel.reduced (juce::roundToInt (20 * s)).withTrimmedTop (juce::roundToInt (30 * s)).removeFromTop (juce::roundToInt (20 * s)),
+                juce::Justification::centredLeft);
+}
+
+//==============================================================================
 // PAGE DES PRESETS
 PresetBrowser::PresetBrowser (RavennProcessor& p) : proc (p)
 {
@@ -1453,10 +2062,20 @@ PresetBrowser::PresetBrowser (RavennProcessor& p) : proc (p)
     saveBtn.onClick = [this] { if (onSave) onSave(); };
     importBtn.onClick = [this] { if (onImport) onImport(); };
     folderBtn.onClick = [this] { proc.presets.openFolder(); };
-    for (auto* b : { &closeBtn, &saveBtn, &importBtn, &folderBtn }) addAndMakeVisible (b);
+    exportBtn.onClick = [this] { if (onExport) onExport(); };
+    closeBtn.setButtonText (ui::tr ("FERMER"));
+    folderBtn.setButtonText (ui::tr ("DOSSIER"));
+    exportBtn.setTooltip (ui::tr ("Exporte le réglage actuel dans un fichier .preset, où tu veux (pour le partager)."));
+    for (auto* b : { &closeBtn, &saveBtn, &importBtn, &folderBtn, &exportBtn }) addAndMakeVisible (b);
     closeBtn.setColour (juce::TextButton::buttonOnColourId, ui::cyan);
     closeBtn.setToggleState (true, juce::dontSendNotification);
     refresh();
+}
+
+void PresetBrowser::syncSelection()
+{
+    const auto cur = proc.presets.getCurrent();
+    for (auto* t : tiles) t->setToggleState (t->getButtonText() == cur, juce::dontSendNotification);
 }
 
 void PresetBrowser::refresh()
@@ -1512,6 +2131,7 @@ void PresetBrowser::resized()
     closeBtn.setBounds (top.removeFromRight (px (100)));
     top.removeFromRight (px (8));
     folderBtn.setBounds (top.removeFromRight (px (90)));
+    exportBtn.setBounds (top.removeFromRight (px (76)));
     importBtn.setBounds (top.removeFromRight (px (80)));
     saveBtn.setBounds (top.removeFromRight (px (70)));
     top.removeFromRight (px (12));
@@ -1616,6 +2236,15 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       dsRange  (p.apvts, "dsRange",  "RANGE",      ui::violet, tr ("Réduction maximale (0 = de-esser coupé).")),
       specRes  (p.apvts, "specRes",  "RESONANCE",  ui::red,    tr ("Dompte les résonances : creuse les pics étroits qui dépassent leur voisinage.")),
       specSpeed(p.apvts, "specSpeed","SPEED",      ui::pink,   tr ("Vitesse de l'équilibreur : lent = transparent, rapide = suit chaque passage.")),
+      clipXLo  (p.apvts, "clipXLo",  "LOW | MID",  ui::pink,   tr ("Fréquence entre les bandes LOW et MID du clipper (mode bande).")),
+      clipXHi  (p.apvts, "clipXHi",  "MID | HIGH", ui::pink,   tr ("Fréquence entre les bandes MID et HIGH du clipper (mode bande).")),
+      dsFreqHi (p.apvts, "dsFreqHi", "FREQ HIGH",  ui::cyan,   tr ("Haut de la bande du de-esser : au-dessus, rien n'est touché (garde l'air).")),
+      voiceQ   (p.apvts, "voiceQ",   "VOICE Q",    ui::pink,   tr ("Largeur de la zone de la voix : petit = large et doux, grand = étroit et précis.")),
+      depth3dHi(p.apvts, "depth3dHi","3D TO",      ui::pink,   tr ("La 3D n'agit qu'en dessous de cette fréquence.")),
+      depth3dQ (p.apvts, "depth3dQ", "3D Q",       ui::pink,   tr ("Raideur des bords de la plage 3D : petit = transition douce, grand = coupure nette.")),
+      glueThr  (p.apvts, "glueThr",  "THRESHOLD",  ui::red,    tr ("Seuil du glue : 1 à 4 dB de réduction suffisent pour souder le mix.")),
+      glueMakeup(p.apvts,"glueMakeup","MAKEUP",    ui::cyan,   tr ("Rattrape le volume perdu par la compression.")),
+      glueMix  (p.apvts, "glueMix",  "MIX",        ui::cyan,   tr ("Compression parallèle : mélange avec le signal non compressé.")),
       maskBand  (p.apvts, "maskBand",  ui::violet, tr ("MID 70 Hz-1,1 kHz · HI MID 600 Hz-2,6 kHz · HIGH > 1,5 kHz · FULL > 130 Hz")),
       clipShape (p.apvts, "clipShape", ui::red,    tr ("HARD = net · SOFT = genou doux · TUBE = saturation à lampe"), { "HARD", "SOFT", "TUBE" }),
       clipBand  (p.apvts, "clipBand",  ui::red,    tr ("FULL = tout · LOW < 200 Hz · MID 200 Hz-4 kHz · HIGH > 4 kHz"), { "FULL", "LOW", "MID", "HI" }),
@@ -1636,13 +2265,20 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       dsListen  (p.apvts, "dsListen",  "LISTEN",     ui::amber,  tr ("N'écoute que ce que le de-esser retire.")),
       specCut   (p.apvts, "specCut",   "CUT ONLY",   ui::amber,  tr ("L'équilibreur ne fait que creuser, jamais remonter.")),
       dsAuto    (p.apvts, "dsAuto",    "AUTO",       ui::green,  tr ("De-esser automatique : le seuil suit tout seul le niveau habituel des aigus, seules les sifflantes qui dépassent sont réduites.")),
+      glueOn    (p.apvts, "glueOn",    "GLUE ON",    ui::cyan,   tr ("Active le glue (compresseur de bus) : il soude les éléments entre eux.")),
+      glueRatio (p.apvts, "glueRatio", ui::violet, tr ("Ratio : 1,5 et 2 = colle douce, 4 = tenue ferme, 10 = écrasé.")),
+      glueAtt   (p.apvts, "glueAtt",   ui::pink,   tr ("Attaque : lente (10-30 ms) = les transitoires passent, rapide = tout est tenu.")),
+      glueRel   (p.apvts, "glueRel",   ui::pink,   tr ("Relâchement : AUTO s'adapte à la musique (conseillé).")),
+      glueHpf   (p.apvts, "glueHpf",   ui::pink,   tr ("Filtre du détecteur : le grave ne fait plus pomper le glue.")),
       limStyle  (p.apvts, "limStyle",  tr ("Caractère du limiteur : Transparent, Punchy, Dynamic, Allround, Aggressive, Modern, Bus, Safe, Stealth (arrondit avant de limiter).")),
       satStyle1 (p.apvts, "satStyle1", tr ("Style de saturation de la bande basse.")),
       satStyle2 (p.apvts, "satStyle2", tr ("Style de saturation de la bande médium.")),
       satStyle3 (p.apvts, "satStyle3", tr ("Style de saturation de la bande aiguë.")),
       specTarget(p.apvts, "specTarget", tr ("Courbe visée : MODERN (master actuel), PINK (bruit rose, équilibre neutre), REFERENCE (ta référence importée).")),
       charType  (p.apvts, "charType",  tr ("Modèle : bandes 15 / 30 ips, cassette, console à lampes, console classe A, transformateur, vinyle.")),
-      spectrum (p), stereoView (p), limView (p), scope (p), meters (p), autoMaster (p), mbPage (p), browser (p)
+      spectrum (p), stereoView (p), limView (p), scope (p), meters (p), autoMaster (p), mbPage (p), browser (p),
+      voiceView (p.apvts, true, "voiceFreq", {}, "voiceQ", "voice"), d3View (p.apvts, false, "depth3dFreq", "depth3dHi", "depth3dQ"),
+      dsView (p), clipGauge (p), glueMeter (p), stemDialog (p), changes (p)
 {
     setLookAndFeel (&lnf);
 
@@ -1679,6 +2315,107 @@ RavennEditor::RavennEditor (RavennProcessor& p)
                                                             &dsFreq, &dsThr, &dsRange, &dsListen, &dsAuto })
         place (*c, 6);
     mbPage.selBand = &spectrum.selectedBand;
+
+    // ---- 1.7 : nouvelles pages et vues
+    // STEREO (page 7) : la largeur, le mono et la 3D quittent la page TONE
+    for (auto* c : std::initializer_list<juce::Component*> { &width, &monoFreq, &monoBass, &imgLow, &imgMid, &imgHigh,
+                                                            &depth3d, &depth3dFreq, &depth3dHi, &depth3dQ, &d3View, &d3PresetBox })
+        place (*c, 7);
+    for (auto* c : std::initializer_list<juce::Component*> { &voiceQ, &voiceView, &voicePresetBox }) place (*c, 1);
+    for (auto* c : std::initializer_list<juce::Component*> { &glueOn, &glueThr, &glueRatio, &glueAtt, &glueRel, &glueMakeup, &glueMix, &glueHpf, &glueMeter })
+        place (*c, 8);
+    for (auto* c : std::initializer_list<juce::Component*> { &dsView, &dsFreqHi }) place (*c, 6);
+    for (auto* c : std::initializer_list<juce::Component*> { &clipGauge, &clipXLo, &clipXHi }) place (*c, 0);
+    place (matchRefBtn, 4); place (changesRefBtn, 4);
+    scope.setVisible (false);
+    for (auto it = pageOf.begin(); it != pageOf.end();)
+        it = (it->first == &scope) ? pageOf.erase (it) : it + 1;
+
+    // presets de plages de frequences (voix / 3D)
+    struct VP { const char* name; float f, q, g; };
+    static const VP voicePresets[] = {
+        { "Voix grave / homme", 2200.f, 0.9f, 2.f }, { "Voix aiguë / femme", 3400.f, 1.0f, 2.f }, { "Rap / flow", 2800.f, 1.1f, 2.5f },
+        { "Chant aérien", 4800.f, 0.8f, 2.f }, { "Voix parlée / podcast", 2000.f, 0.8f, 2.f }, { "Intelligibilité", 3000.f, 1.4f, 2.f },
+        { "Corps de la voix", 250.f, 0.9f, 1.5f }, { "Nasal (à creuser)", 1000.f, 1.6f, -2.f }, { "Dureté (à creuser)", 3500.f, 2.2f, -2.f } };
+    voicePresetBox.setTextWhenNothingSelected (tr ("Plages de voix…"));
+    voicePresetBox.setTooltip (tr ("Choisis un type de voix : la fréquence, le Q et le gain de VOICE se règlent tout seuls."));
+    for (int i = 0; i < (int) std::size (voicePresets); ++i) voicePresetBox.addItem (tr (voicePresets[i].name), i + 1);
+    voicePresetBox.onChange = [this]
+    {
+        const int i = voicePresetBox.getSelectedId() - 1;
+        if (i < 0) return;
+        auto set = [this] (const char* id, float v) { if (auto* prm = proc.apvts.getParameter (id)) { prm->beginChangeGesture(); prm->setValueNotifyingHost (prm->convertTo0to1 (v)); prm->endChangeGesture(); } };
+        set ("voiceFreq", voicePresets[i].f); set ("voiceQ", voicePresets[i].q); set ("voice", voicePresets[i].g);
+    };
+    struct DP { const char* name; float lo, hi, q; };
+    static const DP d3Presets[] = {
+        { "Air seulement", 6000.f, 20000.f, 0.7f }, { "Haut-médium", 2000.f, 8000.f, 0.8f }, { "Large", 800.f, 16000.f, 0.6f },
+        { "Médium", 500.f, 4000.f, 0.7f }, { "Tout sauf les graves", 250.f, 20000.f, 0.6f }, { "Doux", 1500.f, 12000.f, 0.5f } };
+    d3PresetBox.setTextWhenNothingSelected (tr ("Plages 3D…"));
+    d3PresetBox.setTooltip (tr ("Choisis la zone où la 3D agit : FROM, TO et Q se règlent tout seuls."));
+    for (int i = 0; i < (int) std::size (d3Presets); ++i) d3PresetBox.addItem (tr (d3Presets[i].name), i + 1);
+    d3PresetBox.onChange = [this]
+    {
+        const int i = d3PresetBox.getSelectedId() - 1;
+        if (i < 0) return;
+        auto set = [this] (const char* id, float v) { if (auto* prm = proc.apvts.getParameter (id)) { prm->beginChangeGesture(); prm->setValueNotifyingHost (prm->convertTo0to1 (v)); prm->endChangeGesture(); } };
+        set ("depth3dFreq", d3Presets[i].lo); set ("depth3dHi", d3Presets[i].hi); set ("depth3dQ", d3Presets[i].q);
+    };
+
+    // MATCH REFERENCE + CHANGES (page REF)
+    matchRefBtn.setButtonText ("MATCH REFERENCE");
+    matchRefBtn.setColour (juce::TextButton::buttonOnColourId, ui::violet);
+    matchRefBtn.setToggleState (true, juce::dontSendNotification);
+    matchRefBtn.setTooltip (tr ("Lance la lecture puis clique : A garde ton réglage, B = léger, C = fidèle à la référence, D = poussé. Compare avec A/B/C/D."));
+    matchRefBtn.onClick = [this] { if (! proc.startMatchReference()) vhs.show ("MATCH REFERENCE", {}, tr ("Importe d'abord une référence.")); };
+    changesRefBtn.setButtonText ("CHANGES");
+    changesRefBtn.setTooltip (tr ("Montre tous les réglages que le dernier auto a modifiés, avant → après."));
+    changesRefBtn.onClick = [this] { changes.refresh(); showOverlay (changes); };
+
+    // overlays : AUTO STEM, CHANGES
+    addChildComponent (stemDialog);
+    addChildComponent (changes);
+    stemDialog.onClose = [this] { stemDialog.setVisible (false); };
+    changes.onClose = [this] { changes.setVisible (false); };
+    changes.onSave = [this] { changes.setVisible (false); savePreset(); };
+    autoMaster.onStem = [this] { showOverlay (stemDialog); };
+    autoMaster.onChanges = [this] { changes.refresh(); showOverlay (changes); };
+    browser.onExport = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> (tr ("Exporter le preset"),
+                                                       juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (proc.presets.getCurrent() + ".preset"), "*.preset");
+        juce::Component::SafePointer<RavennEditor> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [safe] (const juce::FileChooser& fc)
+        {
+            if (safe == nullptr) return;
+            auto f = fc.getResult();
+            if (f == juce::File()) return;
+            auto st = safe->proc.apvts.copyState();
+            if (auto xml = st.createXml()) xml->writeTo (f.withFileExtension (".preset"));
+        });
+    };
+
+    // ecran VHS + langue
+    addAndMakeVisible (vhs);
+    vhs.langBtn.setButtonText (ui::languageCode());
+    vhs.langBtn.setTooltip (tr ("Langue de l'interface (s'applique entièrement à la réouverture de la fenêtre)."));
+    vhs.langBtn.onClick = [this]
+    {
+        juce::PopupMenu m;
+        const auto names = ui::languageNames();
+        for (int i = 0; i < names.size(); ++i) m.addItem (i + 1, names[i], true, i == ui::language());
+        juce::Component::SafePointer<RavennEditor> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&vhs.langBtn), [safe] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            ui::setLanguage (r - 1);
+            safe->vhs.langBtn.setButtonText (ui::languageCode());
+            safe->vhs.show ("LANGUAGE", ui::languageNames()[r - 1], ui::tr ("La langue s'applique entièrement à la réouverture de la fenêtre du plugin."));
+            safe->repaint();
+        });
+    };
+    addMouseListener (this, true);
     presetBox.setVisible (false);
     presetNameBtn.setTooltip (tr ("Ouvre la page des presets"));
     presetNameBtn.onClick = [this] { browser.refresh(); browser.setVisible (! browser.isVisible()); browser.toFront (false); };
@@ -1687,8 +2424,9 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     browser.onClose = [this] { browser.setVisible (false); };
     browser.onSave = [this] { savePreset(); };
     browser.onImport = [this] { importPresets(); };
-    for (auto* c : std::initializer_list<juce::Component*> { &lowCut, &highCut, &spaceLow, &depth3dFreq })
+    for (auto* c : std::initializer_list<juce::Component*> { &lowCut, &highCut, &spaceLow })
         place (*c, 1);
+    place (depth3dFreq, 7);
     place (clipKnee, 0); place (clipMS, 0); place (limView, 3);
     addAndMakeVisible (stereoView);
     for (int i = 0; i < 4; ++i)
@@ -1700,9 +2438,9 @@ RavennEditor::RavennEditor (RavennProcessor& p)
         addAndMakeVisible (b);
     }
 
-    const char* tabNames[7] = { "CORE", "TONE & SPACE", "SATURATION", "MULTIBAND", "SPECTRAL", "LIMITER", "VOICE & REF" };
-    const int tabPage[7] = { 0, 1, 2, 5, 6, 3, 4 };
-    for (int i = 0; i < 7; ++i)
+    const char* tabNames[9] = { "CORE", "TONE", "STEREO", "SATURATION", "GLUE", "MULTIBAND", "SPECTRAL", "LIMITER", "VOICE & REF" };
+    const int tabPage[9] = { 0, 1, 7, 2, 8, 5, 6, 3, 4 };
+    for (int i = 0; i < 9; ++i)
     {
         auto* t = tabs.add (new juce::TextButton (tabNames[i]));
         t->setClickingTogglesState (false);
@@ -1778,9 +2516,14 @@ RavennEditor::RavennEditor (RavennProcessor& p)
         { "COLOR",                 ui::red,    0, {}, {} },
         { "CLIPPER",               ui::red,    0, {}, {} },
         { "DYNAMICS",              ui::violet, 0, {}, {} },
-        { "EQ & VOICE",            ui::cyan,   1, {}, {} },
+        { "EQ",                    ui::cyan,   1, {}, {} },
+        { "VOICE",                 ui::red,    1, {}, {} },
+        { "3D DEPTH",              ui::violet, 7, {}, {} },
+        { "GLUE",                  ui::red,    8, {}, {} },
+        { "GLUE METER",            ui::cyan,   8, {}, {} },
+        { "CLIPPER METER",         ui::red,    0, {}, {} },
         { "FRESH AIR",             ui::cyan,   1, {}, {} },
-        { "STEREO & 3D",           ui::violet, 1, {}, {} },
+        { "STEREO",                ui::violet, 7, {}, {} },
         { "SPACE",                 ui::cyan,   1, {}, {} },
         { "FATTEN",                ui::red,    2, {}, tr ("Écrase + sature. Le clipper et le limiteur rattrapent les pics.") },
         { "SPECTRAL BALANCE",      ui::cyan,   6, {}, tr ("Équilibreur de spectre (~60 zones) : BALANCE ramène le grave / médium / aigu vers la courbe visée, RESONANCE creuse les pics étroits. Ajoute la latence d'une FFT quand il est actif.") },
@@ -1798,7 +2541,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     };
 
     setResizable (true, true);
-    setResizeLimits (930, 600, 1860, 1200);
+    setResizeLimits (930, 660, 1860, 1320);
     if (auto* c = getConstrainer())
         c->setFixedAspectRatio ((double) baseW / (double) baseH);
     setSize ((int) baseW, (int) baseH);
@@ -1818,6 +2561,41 @@ void RavennEditor::place (juce::Component& c, int pg)
 {
     addChildComponent (c);
     pageOf.push_back ({ &c, pg });
+}
+
+void RavennEditor::showOverlay (juce::Component& c)
+{
+    // une seule fenetre par-dessus a la fois
+    for (auto* o : std::initializer_list<juce::Component*> { &stemDialog, &changes, &browser })
+        if (o != &c) o->setVisible (false);
+    c.setBounds (getLocalBounds().withTrimmedTop (juce::roundToInt (70.f * (float) getWidth() / baseW)));
+    c.setVisible (true);
+    c.toFront (true);
+}
+
+// Ecran VHS : on cherche le reglage sous la souris (bouton, potard, liste) et on affiche son aide
+void RavennEditor::mouseMove (const juce::MouseEvent& e)
+{
+    for (auto* c = e.eventComponent; c != nullptr && c != this; c = c->getParentComponent())
+    {
+        if (auto* knob = dynamic_cast<NeonKnob*> (c))
+        {
+            vhs.show (knob->slider.getProperties()["title"].toString(), knob->slider.getTextFromValue (knob->slider.getValue()), knob->slider.getTooltip());
+            return;
+        }
+        if (auto* tc = dynamic_cast<juce::SettableTooltipClient*> (c))
+        {
+            const auto tip = tc->getTooltip();
+            if (tip.isEmpty()) continue;
+            juce::String title = c->getProperties()["title"].toString();
+            if (title.isEmpty())
+                if (auto* b = dynamic_cast<juce::Button*> (c)) title = b->getButtonText();
+            if (title.isEmpty())
+                if (auto* cb = dynamic_cast<juce::ComboBox*> (c)) title = cb->getText();
+            vhs.show (title, {}, tip);
+            return;
+        }
+    }
 }
 
 void RavennEditor::setPage (int pg)
@@ -1929,6 +2707,7 @@ void RavennEditor::timerCallback()
         shownPreset = proc.presets.getCurrent();
         presetBox.setText (shownPreset, juce::dontSendNotification);
         presetNameBtn.setButtonText (shownPreset + juce::String::fromUTF8 ("  ▾"));
+        browser.syncSelection();   // la grille suit les fleches < >
     }
 
     const int slot = proc.getABSlot();
@@ -2206,7 +2985,14 @@ void RavennEditor::resized()
     // ================= PAGE 0 : CORE
     area ("COLOR")    = R (12, Y, 300, H);
     area ("CLIPPER")  = R (324, Y, 340, 250);
-    scope.setBounds (R (324, Y + 260, 340, H - 260));
+    area ("CLIPPER METER") = R (324, Y + 260, 340, H - 260);
+    {
+        auto a = inner ("CLIPPER METER");
+        auto right = a.removeFromRight (px (70));
+        clipXLo.setBounds (right.removeFromTop (right.getHeight() / 2));
+        clipXHi.setBounds (right);
+        clipGauge.setBounds (a);
+    }
     area ("DYNAMICS") = R (676, Y, 312, H);
     {
         // The Mask et sa bande sont cote a cote : la bande se regle juste sous le bouton
@@ -2257,48 +3043,39 @@ void RavennEditor::resized()
         ottXHi.setBounds (r3.reduced (px (6)));
     }
 
-    // ================= PAGE 1 : TONE & SPACE
-    area ("EQ & VOICE")  = R (12, Y, 330, H);
-    area ("FRESH AIR")   = R (354, Y, 150, H);
-    area ("STEREO & 3D") = R (516, Y, 300, H);
-    area ("SPACE")       = R (828, Y, 160, H);
+    // ================= PAGE 1 : TONE
+    area ("EQ")        = R (12, Y, 300, H);
+    area ("VOICE")     = R (324, Y, 330, H);
+    area ("FRESH AIR") = R (666, Y, 150, H);
+    area ("SPACE")     = R (828, Y, 160, H);
     {
-        auto a = inner ("EQ & VOICE");
+        auto a = inner ("EQ");
         const int rh = a.getHeight() / 3, w = a.getWidth() / 3;
         auto r1 = a.removeFromTop (rh), r2 = a.removeFromTop (rh), r3 = a;
         tilt.setBounds (r1.removeFromLeft (w).reduced (px (3)));
         lowShelf.setBounds (r1.removeFromLeft (w).reduced (px (3)));
         air.setBounds (r1.reduced (px (3)));
-        voice.setBounds (r2.removeFromLeft (w).reduced (px (3)));
-        voiceFreq.setBounds (r2.removeFromLeft (w).reduced (px (3)));
-        voiceFocus.setBounds (r2.reduced (px (3)));
-        lowCut.setBounds (r3.removeFromLeft (w).reduced (px (3)));
-        highCut.setBounds (r3.removeFromLeft (w).reduced (px (3)));
-        eqPos.setBounds (r3.withSizeKeepingCentre (r3.getWidth() - px (6), px (28)).translated (0, px (8)));
+        lowCut.setBounds (r2.removeFromLeft (w).reduced (px (3)));
+        highCut.setBounds (r2.removeFromLeft (w).reduced (px (3)));
+        eqPos.setBounds (r3.withSizeKeepingCentre (px (160), px (28)));
+    }
+    {
+        auto a = inner ("VOICE");
+        voicePresetBox.setBounds (a.removeFromTop (px (28)));
+        a.removeFromTop (px (6));
+        voiceView.setBounds (a.removeFromTop (px (78)));
+        a.removeFromTop (px (6));
+        const int w = a.getWidth() / 2, rh = a.getHeight() / 2;
+        auto r1 = a.removeFromTop (rh), r2 = a;
+        voice.setBounds (r1.removeFromLeft (w).reduced (px (4)));
+        voiceFreq.setBounds (r1.reduced (px (4)));
+        voiceQ.setBounds (r2.removeFromLeft (w).reduced (px (4)));
+        voiceFocus.setBounds (r2.reduced (px (4)));
     }
     {
         auto a = inner ("FRESH AIR");
         airMid.setBounds (a.removeFromTop (a.getHeight() / 2).reduced (px (6)));
         airHigh.setBounds (a.reduced (px (6)));
-    }
-    {
-        auto a = inner ("STEREO & 3D");
-        const int rh = a.getHeight() / 3, w = a.getWidth() / 3;
-        auto r1 = a.removeFromTop (rh), r2 = a.removeFromTop (rh), r3 = a;
-        // ligne 1 : largeur | mono freq + mono bass juste dessous
-        width.setBounds (r1.removeFromLeft (w).reduced (px (3)));
-        {
-            auto mc = r1.removeFromLeft (w * 2);
-            monoBass.setBounds (mc.removeFromRight (w).withSizeKeepingCentre (w - px (8), px (30)));
-            monoFreq.setBounds (mc.reduced (px (3)));
-        }
-        // ligne 2 : 3D DEPTH a cote de 3D FROM
-        depth3d.setBounds (r2.removeFromLeft (w).reduced (px (3)));
-        depth3dFreq.setBounds (r2.removeFromLeft (w).reduced (px (3)));
-        // ligne 3 : imager 3 bandes
-        imgLow.setBounds (r3.removeFromLeft (w).reduced (px (3)));
-        imgMid.setBounds (r3.removeFromLeft (w).reduced (px (3)));
-        imgHigh.setBounds (r3.reduced (px (3)));
     }
     {
         auto a = inner ("SPACE");
@@ -2308,6 +3085,52 @@ void RavennEditor::resized()
         spaceLow.setBounds (a.reduced (px (8)));
     }
 
+    // ================= PAGE 7 : STEREO
+    area ("STEREO")   = R (12, Y, 480, H);
+    area ("3D DEPTH") = R (504, Y, 484, H);
+    {
+        auto a = inner ("STEREO");
+        const int rh = a.getHeight() / 2, w = a.getWidth() / 3;
+        auto r1 = a.removeFromTop (rh), r2 = a;
+        width.setBounds (r1.removeFromLeft (w).reduced (px (4)));
+        monoFreq.setBounds (r1.removeFromLeft (w).reduced (px (4)));
+        monoBass.setBounds (r1.withSizeKeepingCentre (w - px (16), px (32)));
+        imgLow.setBounds (r2.removeFromLeft (w).reduced (px (4)));
+        imgMid.setBounds (r2.removeFromLeft (w).reduced (px (4)));
+        imgHigh.setBounds (r2.reduced (px (4)));
+    }
+    {
+        auto a = inner ("3D DEPTH");
+        d3PresetBox.setBounds (a.removeFromTop (px (28)));
+        a.removeFromTop (px (6));
+        d3View.setBounds (a.removeFromTop (px (84)));
+        a.removeFromTop (px (6));
+        const int w = a.getWidth() / 4;
+        depth3d.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        depth3dFreq.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        depth3dHi.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        depth3dQ.setBounds (a.reduced (px (2)));
+    }
+
+    // ================= PAGE 8 : GLUE
+    area ("GLUE")       = R (12, Y, 600, H);
+    area ("GLUE METER") = R (624, Y, 364, H);
+    {
+        auto a = inner ("GLUE");
+        auto top = a.removeFromTop (px (34));
+        glueOn.setBounds (top.removeFromLeft (px (130)));
+        a.removeFromTop (px (8));
+        auto knobs = a.removeFromTop (a.getHeight() * 40 / 100);
+        const int w = knobs.getWidth() / 3;
+        glueThr.setBounds (knobs.removeFromLeft (w).reduced (px (4)));
+        glueMakeup.setBounds (knobs.removeFromLeft (w).reduced (px (4)));
+        glueMix.setBounds (knobs.reduced (px (4)));
+        a.removeFromTop (px (10));
+        const int rowH = juce::jmin (px (30), (a.getHeight() - px (10)) / 4 - px (14));
+        auto row = [&] (Segmented& sg) { a.removeFromTop (px (14)); sg.setBounds (a.removeFromTop (rowH)); };
+        row (glueRatio); row (glueAtt); row (glueRel); row (glueHpf);
+    }
+    glueMeter.setBounds (inner ("GLUE METER"));
     // ================= PAGE 2 : SATURATION & CHARACTER
     area ("MULTIBAND SATURATION") = R (12, Y, 480, H);
     area ("FATTEN")               = R (504, Y, 170, H);
@@ -2353,36 +3176,37 @@ void RavennEditor::resized()
     mbPage.setBounds (R (12, Y, 976, H));
 
     // ================= PAGE 6 : SPECTRAL & DE-ESSER
-    area ("SPECTRAL BALANCE") = R (12, Y, 600, H);
-    area ("DE-ESSER")         = R (624, Y, 364, H);
+    area ("SPECTRAL BALANCE") = R (12, Y, 380, H);
+    area ("DE-ESSER")         = R (404, Y, 584, H);
     {
         auto a = inner ("SPECTRAL BALANCE");
-        a.removeFromBottom (px (60));
+        a.removeFromBottom (px (70));
         auto top = a.removeFromTop (px (34)).withTrimmedTop (px (4));
-        specTarget.setBounds (top.removeFromLeft (top.getWidth() / 2).reduced (px (6), 0));
-        specCut.setBounds (top.withSizeKeepingCentre (px (140), top.getHeight()));
+        specTarget.setBounds (top.removeFromLeft (top.getWidth() * 60 / 100).reduced (px (3), 0));
+        specCut.setBounds (top.reduced (px (3), 0));
         a.removeFromTop (px (8));
-        const int w = a.getWidth() / 3;
-        stabilize.setBounds (a.removeFromLeft (w).reduced (px (6)));
-        specRes.setBounds (a.removeFromLeft (w).reduced (px (6)));
-        specSpeed.setBounds (a.reduced (px (16)));
+        const int rh = a.getHeight() / 2;
+        auto r1 = a.removeFromTop (rh);
+        stabilize.setBounds (r1.removeFromLeft (r1.getWidth() / 2).reduced (px (4)));
+        specRes.setBounds (r1.reduced (px (4)));
+        specSpeed.setBounds (a.withSizeKeepingCentre (a.getWidth() / 2, a.getHeight()).reduced (px (6)));
     }
     {
         auto a = inner ("DE-ESSER");
-        a.removeFromBottom (px (60));
-        dsInfoArea = a.removeFromBottom (px (24));
-        {
-            auto pr = a.removeFromBottom (px (30)).withSizeKeepingCentre (px (250), px (30));
-            dsAuto.setBounds (pr.removeFromLeft (px (120)));
-            dsListen.setBounds (pr.removeFromRight (px (120)));
-        }
+        a.removeFromBottom (px (34));
+        dsView.setBounds (a.removeFromTop (px (130)));
+        a.removeFromTop (px (8));
+        dsInfoArea = a.removeFromBottom (px (22));
+        auto pr = a.removeFromBottom (px (30)).withSizeKeepingCentre (px (260), px (30));
+        dsAuto.setBounds (pr.removeFromLeft (px (124)));
+        dsListen.setBounds (pr.removeFromRight (px (124)));
         a.removeFromBottom (px (6));
-        auto r1 = a.removeFromTop (a.getHeight() / 2);
-        dsRange.setBounds (r1.withSizeKeepingCentre (r1.getWidth() / 2, r1.getHeight()).reduced (px (2)));
-        dsFreq.setBounds (a.removeFromLeft (a.getWidth() / 2).reduced (px (6)));
-        dsThr.setBounds (a.reduced (px (6)));
+        const int w = a.getWidth() / 4;
+        dsFreq.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        dsFreqHi.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        dsThr.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        dsRange.setBounds (a.reduced (px (2)));
     }
-
     // ================= PAGE 3 : LIMITER & OUTPUT
     area ("LIMITER") = R (12, Y, 640, H);
     area ("OUTPUT")  = R (664, Y, 324, H);
@@ -2426,6 +3250,11 @@ void RavennEditor::resized()
         autoGain.setBounds (a.removeFromTop (px (36)).reduced (px (4), 0));
     }
 
+    // ---- Ecran VHS (bas de la fenetre) et fenetres par-dessus
+    vhs.setBounds (R (12, 798, 1216, 72));
+    for (auto* ov : std::initializer_list<juce::Component*> { &stemDialog, &changes })
+        if (ov->isVisible()) ov->setBounds (getLocalBounds().withTrimmedTop (px (70)));
+
     // ================= PAGE 4 : VOICE & REFERENCE
     area ("VOICE SIDECHAIN") = R (12, Y, 470, H);
     area ("REFERENCE")       = R (494, Y, 494, H);
@@ -2442,7 +3271,12 @@ void RavennEditor::resized()
         refClearBtn.setBounds (btns.removeFromRight (px (100)));
         btns.removeFromRight (px (8));
         refImportBtn.setBounds (btns);
-        a.removeFromTop (px (12));
+        a.removeFromTop (px (8));
+        auto mb = a.removeFromTop (px (36));
+        changesRefBtn.setBounds (mb.removeFromRight (px (120)));
+        mb.removeFromRight (px (8));
+        matchRefBtn.setBounds (mb);
+        a.removeFromTop (px (10));
         refInfoArea = a.removeFromTop (px (66));
         refMatch.setBounds (a.withSizeKeepingCentre (px (170), jmin (a.getHeight(), px (180))));
     }

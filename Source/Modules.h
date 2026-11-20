@@ -506,37 +506,46 @@ struct FreshAir
 //  - le Mid recoit une petite presence a 3,2 kHz (il "avance").
 struct Depth3D
 {
-    Biquad sideHP, midHP, front;
+    Biquad sideHP, midHP, front, sideLP, midLP;
     std::array<Biquad, 4> ap, ap2;
     double fs = 48000, lastAmt = -1;
+    double hiF = 20000, q = 0.6;
 
     void prepare (double sampleRate)
     {
         fs = sampleRate;
-        sideHP.highpass (fs, std::max (40.0, cutF * 0.31), 0.7);
-        midHP.highpass (fs, cutF, 0.6);
+        sideHP.highpass (fs, std::max (40.0, cutF * 0.31), q + 0.1);
+        midHP.highpass (fs, cutF, q);
+        sideLP.lowpass (fs, std::min (hiF, fs * 0.45), q + 0.1);
+        midLP.lowpass (fs, std::min (hiF, fs * 0.45), q);
         static constexpr double f[4]  = { 700, 1700, 3900, 8200 };
         static constexpr double f2[4] = { 2300, 4100, 6900, 11000 };
         for (int i = 0; i < 4; ++i) { makeAllpass (ap[(size_t) i], fs, f[i], 0.6); makeAllpass (ap2[(size_t) i], fs, f2[i], 0.5); }
         lastAmt = -1;
     }
-    void reset() noexcept { sideHP.reset(); midHP.reset(); front.reset(); for (auto& a : ap) a.reset(); for (auto& a : ap2) a.reset(); }
+    void reset() noexcept { sideHP.reset(); midHP.reset(); sideLP.reset(); midLP.reset(); front.reset(); for (auto& a : ap) a.reset(); for (auto& a : ap2) a.reset(); }
     double cutF = 800;
     // filtre reglable : en dessous, la 3D ne touche a rien (graves solides)
-    void setFreq (double f) noexcept
+    // plage de la 3D : FROM (passe-haut) - TO (passe-bas), Q = raideur / resonance des bords
+    void setRange (double lo, double hi, double qq) noexcept
     {
-        if (f == cutF) return;
-        cutF = f;
-        midHP.highpass (fs, f, 0.6);
-        sideHP.highpass (fs, std::max (40.0, f * 0.31), 0.7);
+        if (lo == cutF && hi == hiF && qq == q) return;
+        cutF = lo; hiF = hi; q = qq;
+        midHP.highpass (fs, lo, q);
+        sideHP.highpass (fs, std::max (40.0, lo * 0.31), q + 0.1);
+        midLP.lowpass (fs, std::min (hi, fs * 0.45), q);
+        sideLP.lowpass (fs, std::min (hi, fs * 0.45), q + 0.1);
     }
+    void setFreq (double f) noexcept { setRange (f, hiF, q); }
 
     inline void process (double& M, double& S, double amt) noexcept
     {
         if (amt != lastAmt) { front.peak (fs, 3200, 0.8, 1.6 * amt); lastAmt = amt; }
         double d = sideHP.process (S);
+        if (hiF < 19000) d = sideLP.process (d);
         for (auto& a : ap) d = a.process (d);
         double e = midHP.process (M);
+        if (hiF < 19000) e = midLP.process (e);
         for (auto& a : ap2) e = a.process (e);
         S += amt * (0.75 * d + 0.5 * e);
         M = front.process (M);
@@ -692,7 +701,7 @@ struct Stabilizer
 struct VoiceFocus
 {
     Biquad bell, mud, sHP, sLP;
-    double fs = 0, lastAmt = -1, lastF = -1;
+    double fs = 0, lastAmt = -1, lastF = -1, q = 0.8, lastQ = -1;
     void prepare (double sampleRate)
     {
         fs = sampleRate;
@@ -702,9 +711,10 @@ struct VoiceFocus
     void reset() noexcept { bell.reset(); mud.reset(); sHP.reset(); sLP.reset(); }
     inline void process (double& M, double& S, double amt, double freq) noexcept
     {
-        if (amt != lastAmt || freq != lastF)
+        if (amt != lastAmt || freq != lastF || q != lastQ)
         {
-            bell.peak (fs, freq, 0.8, 4.0 * amt);
+            lastQ = q;
+            bell.peak (fs, freq, q, 4.0 * amt);
             mud.peak (fs, 320, 0.9, -2.0 * amt);
             lastAmt = amt; lastF = freq;
         }
@@ -1070,7 +1080,12 @@ struct DynEQ
 // depasse le seuil (jusqu'a RANGE dB). LISTEN = n'ecouter que ce qui est retire.
 struct DeEsser
 {
-    std::array<LR4, 2> lp, hp;
+    std::array<LR4, 2> lp, hp, bandLP, bandHP, apL, apH;
+    static constexpr int nDet = 5;
+    std::array<Biquad, nDet> det;
+    std::array<double, nDet> dEnv {}, dSlow {}, dScore {};
+    double hiF = 20000, autoFreq = 6500, autoThr = -30, detDb = -100;
+    int autoCount = 0;
     double fs = 0, f = 0, env = 0, g = 1, aC = 0, rC = 0, gS = 0, lastGrDb = 0, slow = 0, sC = 0;
 
     void prepare (double sampleRate)
@@ -1080,9 +1095,32 @@ struct DeEsser
         rC = 1.0 - std::exp (-1.0 / (0.06 * fs));
         gS = 1.0 - std::exp (-1.0 / (0.0008 * fs));
         sC = 1.0 - std::exp (-1.0 / (1.5 * fs));
+        static constexpr double dc[nDet] = { 4500, 5600, 6800, 8200, 10000 };
+        for (int k = 0; k < nDet; ++k)
+        {
+            const double w = 2 * pi * dc[k] / fs, cw = std::cos (w), al = std::sin (w) / (2 * 2.0);
+            det[(size_t) k].set (al, 0, -al, 1 + al, -2 * cw, 1 - al);
+        }
+        hiF = 0; setHi (20000);
         reset();
     }
-    void reset() noexcept { for (auto* a : { &lp, &hp }) for (auto& x : *a) x.reset(); env = 0; g = 1; slow = 0; }
+    void reset() noexcept
+    {
+        for (auto* a : { &lp, &hp, &bandLP, &bandHP, &apL, &apH }) for (auto& x : *a) x.reset();
+        for (auto& d : det) d.reset();
+        dEnv.fill (0); dSlow.fill (0); dScore.fill (0);
+        env = 0; g = 1; slow = 0;
+    }
+    void setHi (double f) noexcept
+    {
+        f = std::min (f, fs * 0.45);
+        if (f == hiF) return;
+        hiF = f;
+        for (auto& x : bandLP) x.setLowpass (fs, f);
+        for (auto& x : bandHP) x.setHighpass (fs, f);
+        for (auto& x : apL) x.setLowpass (fs, f);
+        for (auto& x : apH) x.setHighpass (fs, f);
+    }
     void setFreq (double freq) noexcept
     {
         if (freq == f) return;
@@ -1094,22 +1132,57 @@ struct DeEsser
     // les sifflantes qui depassent nettement leur niveau habituel sont reduites
     inline void process (double* x, int nch, double thrDb, double rangeDb, bool listen, bool autoMode = false) noexcept
     {
-        double lo[2] {}, hi[2] {}, det = 0;
+        // bande traitee : de FREQ a FREQ HI (au-dessus de FREQ HI : intact)
+        const bool useHi = hiF < fs * 0.44;
+        double lo[2] {}, hi[2] {}, top[2] {}, det = 0;
         for (int c = 0; c < nch; ++c)
         {
-            lo[c] = lp[(size_t) c].process (x[c]);
-            hi[c] = hp[(size_t) c].process (x[c]);
+            const auto C = (size_t) c;
+            lo[c] = lp[C].process (x[c]);
+            hi[c] = hp[C].process (x[c]);
+            if (useHi)
+            {
+                top[c] = bandHP[C].process (hi[c]);
+                hi[c] = bandLP[C].process (hi[c]);
+                lo[c] = apL[C].process (lo[c]) + apH[C].process (lo[c]);
+            }
             det = std::max (det, std::abs (hi[c]));
+        }
+        // auto : repere la zone la plus "pointue" (sifflante) parmi 4,5 - 10 kHz
+        if (autoMode)
+        {
+            const double m = nch > 1 ? 0.5 * (x[0] + x[1]) : x[0];
+            for (int k = 0; k < nDet; ++k)
+            {
+                const double v = std::abs (this->det[(size_t) k].process (m));
+                dEnv[(size_t) k] += (v > dEnv[(size_t) k] ? aC : rC) * (v - dEnv[(size_t) k]);
+                dSlow[(size_t) k] += sC * (v - dSlow[(size_t) k]);
+            }
+            if (++autoCount >= 256)
+            {
+                autoCount = 0;
+                static constexpr double dc[nDet] = { 4500, 5600, 6800, 8200, 10000 };
+                int best = 2; double bs = -1;
+                for (int k = 0; k < nDet; ++k)
+                {
+                    const double sc = dEnv[(size_t) k] / (dSlow[(size_t) k] + 1e-9);
+                    dScore[(size_t) k] += 0.02 * (sc - dScore[(size_t) k]);
+                    if (dScore[(size_t) k] > bs) { bs = dScore[(size_t) k]; best = k; }
+                }
+                const double target = dc[best] * 0.8;
+                autoFreq += 0.05 * (target - autoFreq);
+            }
         }
         env += (det > env ? aC : rC) * (det - env);
         slow += sC * (det - slow);
         const double L = 20.0 * std::log10 (env + 1e-9);
-        if (autoMode) thrDb = 20.0 * std::log10 (slow + 1e-9) + 4.0;
+        if (autoMode) { thrDb = 20.0 * std::log10 (slow + 1e-9) + 4.0; autoThr = thrDb; }
+        detDb = L;
         const double grDb = -std::min (rangeDb, std::max (0.0, (L - thrDb) * 0.75));
         g += gS * (std::pow (10.0, grDb / 20.0) - g);
         lastGrDb = grDb;
         for (int c = 0; c < nch; ++c)
-            x[c] = listen ? hi[c] * (1.0 - g) : lo[c] + hi[c] * g;
+            x[c] = listen ? hi[c] * (1.0 - g) : lo[c] + top[c] + hi[c] * g;
     }
 };
 
@@ -1255,6 +1328,62 @@ struct SpectralEngine
             for (int i = 0; i < N; ++i)
                 outBuf[c][(size_t) ((outPos + i) % N)] += fr[(size_t) i] * win[(size_t) i] * 0.5f;
         }
+    }
+};
+
+//==============================================================================
+// GLUE : compresseur de bus a la maniere des consoles (conception originale).
+// Detection stereo liee, sidechain filtre (HPF), genou doux, attaque /
+// relachement par crans, relachement AUTO dependant du programme, mix parallele.
+struct GlueComp
+{
+    std::array<Biquad, 2> scHP;
+    double fs = 0, env = 0, gDb = 0, aC = 0, rC = 0, rSlowC = 0, envSlow = 0, gSm = 0;
+    int lastHpf = -1, lastAtt = -1, lastRel = -1;
+    double lastGr = 0;
+
+    void prepare (double sampleRate) { fs = sampleRate; lastHpf = lastAtt = lastRel = -1; gSm = 1.0 - std::exp (-1.0 / (0.0005 * fs)); reset(); }
+    void reset() noexcept { for (auto& f : scHP) f.reset(); env = envSlow = gDb = 0; }
+
+    void configure (int hpf, int att, int rel) noexcept
+    {
+        static constexpr double hpfHz[4] = { 0, 60, 90, 150 };
+        static constexpr double attMs[6] = { 0.1, 0.3, 1, 3, 10, 30 };
+        static constexpr double relS[5]  = { 0.1, 0.3, 0.6, 1.2, 0.0 };
+        if (hpf != lastHpf) { lastHpf = hpf; if (hpf > 0) for (auto& f : scHP) f.highpass (fs, hpfHz[std::clamp (hpf, 0, 3)], 0.7); }
+        if (att != lastAtt) { lastAtt = att; aC = 1.0 - std::exp (-1.0 / (attMs[std::clamp (att, 0, 5)] * 0.001 * fs)); }
+        if (rel != lastRel)
+        {
+            lastRel = rel;
+            const double r = relS[std::clamp (rel, 0, 4)];
+            rC = 1.0 - std::exp (-1.0 / ((r > 0 ? r : 0.12) * fs));
+            rSlowC = 1.0 - std::exp (-1.0 / ((r > 0 ? r : 1.5) * fs));
+        }
+    }
+
+    inline void process (double* x, int nch, double thrDb, double ratio, double makeupDb, double mix, bool autoRel) noexcept
+    {
+        double d = 0;
+        for (int c = 0; c < nch; ++c)
+        {
+            const double s = lastHpf > 0 ? scHP[(size_t) c].process (x[c]) : x[c];
+            d = std::max (d, std::abs (s));
+        }
+        const double L = 20.0 * std::log10 (d + 1e-9);
+        constexpr double knee = 6.0;
+        const double over = L - thrDb;
+        const double slope = 1.0 / ratio - 1.0;
+        double t = 0;
+        if (std::abs (over) <= knee * 0.5) t = slope * (over + knee * 0.5) * (over + knee * 0.5) / (2.0 * knee);
+        else if (over > 0) t = slope * over;
+        // relachement AUTO : rapide sur un pic isole, lent quand ca compresse longtemps
+        if (t < env) env += aC * (t - env);
+        else env += (autoRel && envSlow < -2.0 ? rSlowC : rC) * (t - env);
+        envSlow += rSlowC * (env - envSlow);
+        gDb += gSm * (env - gDb);
+        lastGr = gDb;
+        const double g = std::pow (10.0, (gDb + makeupDb) / 20.0);
+        for (int c = 0; c < nch; ++c) x[c] = x[c] * (1.0 - mix) + x[c] * g * mix;
     }
 };
 

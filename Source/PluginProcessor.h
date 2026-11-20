@@ -58,6 +58,10 @@ public:
     std::array<std::atomic<float>, 4> mbGrAcc;      // reduction par bande du multibande (dB)
     std::array<std::atomic<float>, 2> dynGain;      // gain actuel des bandes dynamiques (dB)
     std::atomic<float> mbAutoDb { 0.f }, dsGrAcc { 0.f }, longTermLufs { -100.f };
+    std::atomic<float> glueGrAcc { 0.f }, clipActivity { 0.f }, dsThrNow { -30.f }, dsFreqNow { 6500.f };
+    // Vue du de-esser : niveau des sifflantes et reduction, une tranche par 10 ms
+    std::array<std::atomic<float>, 512> dsViewIn, dsViewGr;
+    std::atomic<int> dsViewWrite { 0 };
     // Vue du limiteur : crete avant limitation et reduction, une tranche par 10 ms
     std::array<std::atomic<float>, 512> limViewIn, limViewGr;
     std::atomic<int> limViewWrite { 0 };
@@ -109,6 +113,19 @@ public:
     void cancelAutoMaster();
     void autoMasterTick();
     juce::String getAutoMasterReport() const { return amReport; }
+
+    // ---- AUTO STEM : auto master selon le type de piste (on demande avant d'agir)
+    enum StemType : int { stemMix = 0, stemDrums, stemBass, stemLeadVox, stemBackVox, stemSynths, stemGuitars, stemPiano, numStemTypes };
+    enum StemStyle : int { styleRap = 0, stylePop, styleElectro, styleRock, styleAfro, styleOther, numStyles };
+    void startAutoStem (int type, int style, int intensity);   // intensity : 0 leger, 1 normal, 2 fort
+
+    // ---- MATCH REFERENCE : A = reglage actuel, B / C / D = 3 dosages cales sur la reference
+    bool startMatchReference();
+
+    // ---- Ce que l'auto (master / stem / match) a change
+    struct Change { juce::String name, before, after; };
+    std::vector<Change> getLastChanges() const;
+    bool hasLastChanges() const { return changesBefore.isValid() && changesAfter.isValid(); }
     static constexpr int numTargets = 9;
     static float targetLufs (int idx);
 
@@ -156,7 +173,9 @@ private:
                            *dynFreq[2] {}, *dynQ[2] {}, *dynThr[2] {}, *dynRange[2] {},
                            *lowCut {}, *highCut {}, *clipKnee {}, *clipMS {}, *spaceLow {}, *depth3dFreq {},
                            *dsFreq {}, *dsThr {}, *dsRange {}, *dsListen {}, *specRes {}, *specSpeed {}, *specTarget {},
-                           *specCut {}, *mbAuto {}, *dsAuto {};
+                           *specCut {}, *mbAuto {}, *dsAuto {},
+                           *clipXLo {}, *clipXHi {}, *dsFreqHi {}, *voiceQ {}, *depth3dHi {}, *depth3dQ {},
+                           *glueOn {}, *glueThr {}, *glueRatio {}, *glueAtt {}, *glueRel {}, *glueMakeup {}, *glueMix {}, *glueHpf {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -200,6 +219,10 @@ private:
     gdsp::DynEQ dynEq;
     gdsp::DeEsser deEsser;
     gdsp::SpectralEngine spectral;
+    gdsp::GlueComp glue;
+    float lastVoiceQ = -1.f;
+    long long clipHits = 0, clipTotal = 0;
+    float dsViewPk = -100.f, dsViewGrMin = 0.f; int dsViewCount = 0;
     std::array<gdsp::LR4, 2> lowCutF, highCutF;
     float lastLowCut = -1.f, lastHighCut = -1.f;
     double mbInMs = 0, mbOutMs = 0, mbAg = 1.0;
@@ -254,6 +277,12 @@ private:
     std::atomic<bool> amResetStats { false }, amResetWindow { false };
 
     float amInLufs = -100.f, amTargetLufs = -9.f;
+    bool stemMode = false, matchMode = false;
+    int stemType = 0, stemStyle = 0, stemIntensity = 1;
+    juce::ValueTree preMatch, changesBefore, changesAfter;
+    void applyAutoStem();
+    void buildMatchSlots();
+    void setTreeValue (const juce::String& id, float value, juce::UndoManager* um);
     int amIter = 0;
     juce::String amReport;
 

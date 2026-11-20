@@ -38,6 +38,8 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **1.6** : multibande éditable directement sur le spectre (points de seuil, molette = ratio, double-clic = bypass, bandes dynamiques par double-clic), page des presets (catégories + recherche), auto de-esser, 10 courbes pour l'équilibreur, auto master qui règle tous les modules (annulable en une fois), copie A/B/C/D par menu, PLR.
 
+**1.7** : AUTO STEM (8 types de pistes, style, intensité), MATCH REFERENCE (A = ton réglage, B/C/D = 3 dosages) et liste CHANGES (avant → après, enregistrable en preset), GLUE (compresseur de bus + VU-mètre), jauge du clipper avec fréquences réglables, de-esser avec bande FREQ → FREQ HIGH et vue façon Pro-DS (l'auto bouge ses potards), plages de voix et plages 3D (presets + Q), stéréo 2D / nuage 3D / cascade 3D, écran VHS d'aide au survol, 8 langues (EN, FR, DE, JA, ZH, PT, ES, NL), presets par stem, export de preset, flèches synchronisées dans la page des presets.
+
 **RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
@@ -59,8 +61,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.6.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.6.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.7.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.7.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

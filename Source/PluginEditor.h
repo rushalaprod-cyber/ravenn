@@ -4,7 +4,12 @@
 
 namespace ui
 {
-    inline juce::String tr (const char* s) { return juce::String::fromUTF8 (s); }
+    // Langues : EN, FR, DE, JA, ZH, PT, ES, NL (textes source en francais, Lang.cpp)
+    juce::String tr (const char* s);
+    int language();
+    void setLanguage (int lang);
+    juce::String languageCode();
+    juce::StringArray languageNames();
     inline juce::Font font (float h, bool bold = false, float kerning = 0.f)
     {
         return juce::Font (juce::FontOptions (juce::jmax (6.f, h), bold ? juce::Font::bold : juce::Font::plain)
@@ -155,13 +160,24 @@ public:
 class StereoView : public juce::Component, private juce::Timer
 {
 public:
-    explicit StereoView (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    explicit StereoView (RavennProcessor& p);
     void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDrag (const juce::MouseEvent&) override;
 
 private:
-    void timerCallback() override { repaint(); }
+    void timerCallback() override;
+    void paint2D (juce::Graphics&, juce::Rectangle<float>, float s);
+    void paintCloud (juce::Graphics&, juce::Rectangle<float>, float s);
+    void paintWaterfall (juce::Graphics&, juce::Rectangle<float>, float s);
     RavennProcessor& proc;
     float corrDisp = 1.f, widthDisp = 0.f;
+    int mode = 0;                       // 0 = 2D, 1 = nuage 3D, 2 = cascade 3D
+    float yaw = 0.6f, pitch = 0.35f, autoSpin = 0.f;
+    juce::OwnedArray<juce::TextButton> modeBtns;
+    std::unique_ptr<juce::dsp::FFT> fft;
+    std::vector<std::array<float, 48>> history;      // cascade : niveau par bande
+    std::vector<std::array<float, 48>> widthHist;    // cascade : largeur par bande
 };
 
 // Vue du limiteur : crete avant limitation, reduction de gain, plafond
@@ -202,8 +218,11 @@ public:
 private:
     void timerCallback() override;
     RavennProcessor& proc;
-    juce::TextButton goBtn;
+    juce::TextButton goBtn, stemBtn, changesBtn;
     ChoiceBox target;
+public:
+    std::function<void()> onStem, onChanges;
+private:
     juce::String status;
     float progress = 0.f, pulse = 0.f;
 };
@@ -240,6 +259,106 @@ public:
 };
 
 //==============================================================================
+// Petite vue de frequences : une cloche (voix) ou une plage (3D) sur 20 Hz - 20 kHz
+class FreqRangeView : public juce::Component, private juce::Timer
+{
+public:
+    // mode cloche : centre / Q / gain ; mode plage : bas / haut / Q
+    FreqRangeView (juce::AudioProcessorValueTreeState& s, bool bellMode, juce::String idA, juce::String idB, juce::String idQ, juce::String idGain = {})
+        : st (s), bell (bellMode), a (idA), b (idB), q (idQ), gainId (idGain) { startTimerHz (15); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    juce::AudioProcessorValueTreeState& st;
+    bool bell;
+    juce::String a, b, q, gainId;
+};
+
+// Vue du de-esser (a la maniere de Pro-DS) : niveau des sifflantes, seuil, reduction
+class DeEsserView : public juce::Component, private juce::Timer
+{
+public:
+    explicit DeEsserView (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    RavennProcessor& proc;
+};
+
+// Jauge du clipper : aiguille de reduction, maintien de crete, activite
+class ClipGauge : public juce::Component, private juce::Timer
+{
+public:
+    explicit ClipGauge (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override;
+    RavennProcessor& proc;
+    float needle = 0.f, hold = 0.f; int holdT = 0;
+};
+
+// VU a aiguille du GLUE
+class GlueMeter : public juce::Component, private juce::Timer
+{
+public:
+    explicit GlueMeter (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override;
+    RavennProcessor& proc;
+    float needle = 0.f;
+};
+
+// Ecran VHS : informations sur le reglage survole
+class VhsInfo : public juce::Component, private juce::Timer
+{
+public:
+    VhsInfo() { startTimerHz (12); }
+    void paint (juce::Graphics&) override;
+    void resized() override { langBtn.setBounds (getLocalBounds().removeFromRight (juce::jmax (90, getWidth() / 11)).reduced (6, 10)); }
+    void show (const juce::String& title, const juce::String& value, const juce::String& text);
+    juce::TextButton langBtn;
+private:
+    void timerCallback() override { ++frame; repaint(); }
+    juce::String title, value, text;
+    int frame = 0;
+};
+
+// Fenetre AUTO STEM : on demande avant d'agir
+class StemDialog : public juce::Component
+{
+public:
+    explicit StemDialog (RavennProcessor& p);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    std::function<void()> onClose;
+private:
+    RavennProcessor& proc;
+    juce::OwnedArray<juce::TextButton> typeBtns, styleBtns, intBtns;
+    juce::TextButton goBtn, cancelBtn;
+    int type = 0, style = 0, intensity = 1;
+    juce::Rectangle<int> panel;
+    void select (juce::OwnedArray<juce::TextButton>& arr, int idx);
+};
+
+// Liste de ce que l'auto a change (avant -> apres)
+class ChangesOverlay : public juce::Component
+{
+public:
+    explicit ChangesOverlay (RavennProcessor& p);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void refresh();
+    std::function<void()> onClose, onSave;
+private:
+    RavennProcessor& proc;
+    juce::TextButton closeBtn, saveBtn;
+    juce::Viewport view;
+    struct List : juce::Component { std::vector<RavennProcessor::Change> items; void paint (juce::Graphics&) override; } list;
+    juce::Rectangle<int> panel;
+};
+
+//==============================================================================
 // Page des presets (s'ouvre / se ferme) : categories, recherche, tuiles
 class PresetBrowser : public juce::Component
 {
@@ -248,13 +367,14 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void refresh();
-    std::function<void()> onClose, onSave, onImport;
+    std::function<void()> onClose, onSave, onImport, onExport;
+    void syncSelection();
 
 private:
     void rebuildTiles();
     RavennProcessor& proc;
     juce::TextEditor search;
-    juce::TextButton closeBtn { "FERMER" }, saveBtn { "SAVE" }, importBtn { "IMPORT" }, folderBtn { "DOSSIER" };
+    juce::TextButton closeBtn, saveBtn { "SAVE" }, importBtn { "IMPORT" }, folderBtn, exportBtn { "EXPORT" };
     juce::OwnedArray<juce::TextButton> catBtns, tiles;
     juce::String category { "TOUS" };
     juce::Rectangle<int> panel, tileArea;
@@ -270,8 +390,16 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void setPage (int page);
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent& e) override { mouseMove (e); }
+    void showOverlay (juce::Component& c);
     void showPresetBrowser (bool show) { browser.refresh(); browser.setVisible (show); browser.toFront (false); }
     void selectBand (int b) { spectrum.selectedBand = b; }
+    void showTestOverlay (int which)  // 0 = stem dialog, 1 = changements (captures de test)
+    {
+        browser.setVisible (false);
+        if (which == 0) showOverlay (stemDialog); else { changes.refresh(); showOverlay (changes); }
+    }
 
     // glisser-deposer d'un morceau de reference
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
@@ -299,7 +427,6 @@ private:
 
     RavennProcessor& proc;
     RavennLookAndFeel lnf;
-    juce::TooltipWindow tooltips { this, 600 };
 
     NeonKnob mouth, mask, depth, analog, in, clip, out, tilt, lowShelf, air, width, monoFreq, mix,
              ott, ottTime, punch, ottXLo, ottXHi, ottLow, ottMid, ottHigh,
@@ -308,9 +435,12 @@ private:
              charAmt, charWow, charNoise, airMid, airHigh, voice, voiceFreq,
              depth3d, space, spaceSize, scDepth, refMatch,
              fatten, fatColor, imgLow, imgMid, imgHigh, stabilize, voiceFocus,
-             lowCut, highCut, clipKnee, spaceLow, depth3dFreq, dsFreq, dsThr, dsRange, specRes, specSpeed;
+             lowCut, highCut, clipKnee, spaceLow, depth3dFreq, dsFreq, dsThr, dsRange, specRes, specSpeed,
+             clipXLo, clipXHi, dsFreqHi, voiceQ, depth3dHi, depth3dQ, glueThr, glueMakeup, glueMix;
     Segmented maskBand, clipShape, clipBand, eqPos, os, dither;
-    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity, clipMS, dsListen, specCut, dsAuto;
+    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity, clipMS, dsListen, specCut, dsAuto, glueOn;
+    Segmented glueRatio, glueAtt, glueRel, glueHpf;
+    juce::ComboBox voicePresetBox, d3PresetBox;
     ChoiceBox limStyle, satStyle1, satStyle2, satStyle3, charType, specTarget;
     juce::OwnedArray<juce::TextButton> slotBtns;
 
@@ -328,6 +458,14 @@ private:
     AutoMasterPanel autoMaster;
     MultibandPage mbPage;
     PresetBrowser browser;
+    FreqRangeView voiceView, d3View;
+    DeEsserView dsView;
+    ClipGauge clipGauge;
+    GlueMeter glueMeter;
+    VhsInfo vhs;
+    StemDialog stemDialog;
+    ChangesOverlay changes;
+    juce::TextButton matchRefBtn, changesRefBtn;
     juce::TextButton presetNameBtn;
 
     std::vector<Panel> panels;

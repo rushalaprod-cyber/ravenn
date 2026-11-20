@@ -601,6 +601,78 @@ int main()
                          p.apvts.getRawParameterValue ("clip")->load(), p.apvts.getRawParameterValue ("in")->load(), check (ok));
         }
 
+    // --- 1.7 : AUTO STEM (drums, voix lead) : le volume de la piste est conserve, des modules sont regles
+    for (int type : { (int) RavennProcessor::stemDrums, (int) RavennProcessor::stemLeadVox, (int) RavennProcessor::stemBass })
+    {
+        RavennProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        const auto dry = run (p, 48000.0, 512, 0.3f, 4.0);
+        p.startAutoStem (type, RavennProcessor::styleRap, 1);
+        run (p, 48000.0, 512, 0.3f, 30.0, false, true);
+        const bool done = p.amState.load() == RavennProcessor::amDone;
+        p.requestMeterReset();
+        const auto r = run (p, 48000.0, 512, 0.3f, 6.0);
+        const auto ch = p.getLastChanges();
+        const bool ok = done && r.finite && ch.size() >= 3 && std::abs (r.lufs - dry.lufs) < 4.f && r.peak <= 1.0f + 1e-6f;
+        std::printf ("Auto stem type %d : %d reglages changes, %.1f -> %.1f LUFS  %s\n", type, (int) ch.size(), dry.lufs, r.lufs, check (ok));
+    }
+
+    // --- 1.7 : MATCH REFERENCE remplit A/B/C/D
+    {
+        juce::File wav = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ravenn_match_test.wav");
+        wav.deleteFile();
+        {
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::OutputStream> os (wav.createOutputStream().release());
+            std::unique_ptr<juce::AudioFormatWriter> w (fmt.createWriterFor (os.get(), 48000.0, 2, 24, {}, 0));
+            if (w != nullptr)
+            {
+                os.release();
+                Gen gen (48000.0);
+                juce::AudioBuffer<float> b (2, 4800);
+                for (int k = 0; k < 100; ++k) { gen.fill (b, 4800, 0.7f); w->writeFromAudioSampleBuffer (b, 0, 4800); }
+            }
+        }
+        RavennProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        p.loadReference (wav);
+        for (int k = 0; k < 400 && p.refState.load() == RavennProcessor::refLoading; ++k) juce::Thread::sleep (25);
+        const bool started = p.startMatchReference();
+        run (p, 48000.0, 512, 0.15f, 40.0, false, true);
+        const bool done = p.amState.load() == RavennProcessor::amDone;
+        const bool slots = p.slotHasState (0) && p.slotHasState (1) && p.slotHasState (2) && p.slotHasState (3);
+        std::printf ("Match reference : start %d, fini %d, slots A-D %d, slot actif %c, %d changements  %s\n", (int) started, (int) done,
+                     (int) slots, 'A' + p.getABSlot(), (int) p.getLastChanges().size(),
+                     check (started && done && slots && p.getABSlot() == 2 && p.hasLastChanges()));
+    }
+
+    // --- 1.7 : GLUE comprime quand on descend le seuil
+    {
+        RavennProcessor p;
+        setP (p, "glueOn", 1); setP (p, "glueThr", -30.f); setP (p, "glueRatio", 2);
+        const auto r = run (p, 48000.0, 512, 0.5f, 4.0);
+        const float gr = std::abs (p.glueGrAcc.load());
+        std::printf ("%-22s GR %.1f dB  %s\n", "Glue", gr, check (r.finite && gr > 1.f));
+    }
+
+    // --- 1.7 : DE-ESSER auto + bande FREQ..FREQ HI
+    {
+        RavennProcessor p;
+        setP (p, "dsRange", 10.f); setP (p, "dsAuto", 1); setP (p, "dsFreqHi", 9000.f);
+        const auto r = run (p, 48000.0, 512, 0.5f, 4.0);
+        const float f = p.dsFreqNow.load();
+        std::printf ("%-22s freq auto %.0f Hz  seuil %.1f dB  %s\n", "De-esser auto", f, p.dsThrNow.load(),
+                     check (r.finite && f >= 4000.f && f <= 10500.f));
+    }
+
+    // --- 1.7 : presets de stems presents
+    {
+        RavennProcessor p;
+        int stems = 0;
+        for (auto& [cat, names] : p.presets.getFactoryByCategory()) if (cat.startsWith ("STEM")) stems += names.size();
+        std::printf ("%-22s %d presets  %s\n", "Presets stems", stems, check (stems >= 12));
+    }
+
     // --- Gros bloc
     {
         RavennProcessor p;
@@ -620,12 +692,18 @@ int main()
         setP (p, "depth", 20); setP (p, "analog", 25); setP (p, "width", 120); setP (p, "tilt", 1.5f);
         run (p, 48000.0, 512, 0.8f, 6.0);
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        for (int pg = 0; pg < 8; ++pg)
+        for (int pg = 0; pg < 12; ++pg)
         {
             if (auto* re = dynamic_cast<RavennEditor*> (ed.get()))
             {
                 if (pg == 5) re->selectBand (1);
-                if (pg < 7) re->setPage (pg); else re->showPresetBrowser (true);
+                if (pg < 9) re->setPage (pg);
+                else if (pg == 9) re->showPresetBrowser (true);
+                else
+                {
+                    if (pg == 11) { p.startAutoStem (RavennProcessor::stemDrums, RavennProcessor::styleRap, 1); run (p, 48000.0, 512, 0.5f, 20.0, false, true); }
+                    re->showTestOverlay (pg - 10);
+                }
             }
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
             juce::File out = juce::File::getSpecialLocation (juce::File::currentExecutableFile)

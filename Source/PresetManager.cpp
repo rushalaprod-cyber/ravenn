@@ -53,6 +53,46 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
                                                     { "mbRatio3", 2.0f }, { "mbRatio4", 2.5f } } });
     factory.push_back ({ u8 ("Stealth Chaud"),    { { "limGain", 5.0f }, { "limStyle", 10.0f }, { "limCeil", -0.5f } } });
 
+    // 1.7 : presets par stem (piste seule). Le limiteur reste en garde-fou, sans pousser.
+    auto stem = [&] (const char* n, std::initializer_list<std::pair<const char*, float>> v)
+    {
+        std::vector<std::pair<juce::String, float>> vals;
+        vals.push_back ({ "limCeil", -1.0f });
+        for (auto& p : v) vals.push_back ({ p.first, p.second });
+        factory.push_back ({ juce::String::fromUTF8 (n), vals });
+    };
+    // VOIX
+    stem ("Voix Lead Rap",      { { "lowCut", 90.f }, { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 2.f }, { "glueAtt", 2.f },
+                                  { "dsAuto", 1.f }, { "dsRange", 6.f }, { "dsFreqHi", 12000.f }, { "voice", 2.0f }, { "voiceFreq", 3000.f },
+                                  { "voiceQ", 1.0f }, { "airHigh", 30.f }, { "satDrive2", 3.f }, { "dynFreq1", 350.f }, { "dynRange1", -3.f } });
+    stem ("Voix Lead Chant",    { { "lowCut", 80.f }, { "glueOn", 1.f }, { "glueThr", -14.f }, { "glueRatio", 1.f }, { "glueAtt", 3.f },
+                                  { "dsAuto", 1.f }, { "dsRange", 5.f }, { "voice", 1.5f }, { "voiceFreq", 2500.f }, { "voiceQ", 0.8f },
+                                  { "airMid", 20.f }, { "airHigh", 40.f }, { "space", 12.f }, { "spaceSize", 30.f } });
+    stem ("Voix Backs",         { { "lowCut", 150.f }, { "glueOn", 1.f }, { "glueThr", -18.f }, { "glueRatio", 2.f }, { "dsAuto", 1.f },
+                                  { "dsRange", 8.f }, { "voice", -1.5f }, { "voiceFreq", 2500.f }, { "imgMid", 140.f }, { "imgHigh", 150.f },
+                                  { "space", 20.f }, { "airHigh", 25.f } });
+    stem ("Voix Podcast",       { { "lowCut", 80.f }, { "glueOn", 1.f }, { "glueThr", -20.f }, { "glueRatio", 2.f }, { "dsAuto", 1.f },
+                                  { "dsRange", 6.f }, { "voice", 2.0f }, { "voiceFreq", 2000.f }, { "voiceQ", 0.7f }, { "width", 0.f } });
+    // DRUMS
+    stem ("Drums Bus Punch",    { { "glueOn", 1.f }, { "glueThr", -14.f }, { "glueRatio", 2.f }, { "glueAtt", 4.f }, { "glueHpf", 2.f },
+                                  { "punch", 40.f }, { "clip", 3.f }, { "clipShape", 1.f }, { "satDrive1", 3.f }, { "monoBass", 1.f } });
+    stem ("Drums Trap",         { { "glueOn", 1.f }, { "glueThr", -12.f }, { "glueRatio", 2.f }, { "glueAtt", 4.f }, { "glueHpf", 2.f },
+                                  { "punch", 55.f }, { "clip", 5.f }, { "clipShape", 0.f }, { "airHigh", 25.f }, { "monoBass", 1.f } });
+    stem ("Drums Live Rock",    { { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 2.f }, { "glueAtt", 5.f }, { "glueMix", 60.f },
+                                  { "punch", 25.f }, { "charType", 0.f }, { "charAmt", 35.f }, { "space", 10.f } });
+    // BASSE
+    stem ("Basse 808",          { { "lowCut", 25.f }, { "monoBass", 1.f }, { "monoFreq", 200.f }, { "depth", 40.f }, { "satDrive1", 5.f },
+                                  { "satDrive2", 6.f }, { "glueOn", 1.f }, { "glueThr", -14.f }, { "glueRatio", 2.f }, { "width", 0.f } });
+    stem ("Basse Electrique",   { { "lowCut", 35.f }, { "monoBass", 1.f }, { "monoFreq", 150.f }, { "glueOn", 1.f }, { "glueThr", -18.f },
+                                  { "glueRatio", 2.f }, { "glueAtt", 3.f }, { "satDrive2", 4.f }, { "charType", 3.f }, { "charAmt", 30.f } });
+    // INSTRUS
+    stem ("Synthés Larges",     { { "lowCut", 120.f }, { "imgMid", 130.f }, { "imgHigh", 150.f }, { "depth3d", 35.f }, { "glueOn", 1.f },
+                                  { "glueThr", -16.f }, { "glueRatio", 1.f }, { "airHigh", 25.f } });
+    stem ("Guitares",           { { "lowCut", 90.f }, { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 1.f }, { "glueAtt", 4.f },
+                                  { "dynFreq1", 3200.f }, { "dynRange1", -3.f }, { "imgMid", 120.f }, { "charType", 2.f }, { "charAmt", 25.f } });
+    stem ("Piano / Claviers",   { { "lowCut", 50.f }, { "glueOn", 1.f }, { "glueThr", -18.f }, { "glueRatio", 0.f }, { "glueAtt", 4.f },
+                                  { "airMid", 15.f }, { "airHigh", 25.f }, { "space", 12.f }, { "imgHigh", 120.f } });
+
     // Categories (ordre d'affichage du menu)
     auto cat = [] (const juce::String& n) -> juce::String
     {
@@ -65,6 +105,10 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
         if (in ({ "Voix Devant", "Voix En Avant", "De-Ess Doux" })) return "VOIX";
         if (in ({ "Bande Analogique", "Vinyle Lo-Fi" })) return "VINTAGE & LO-FI";
         if (in ({ "Live Sans Latence" })) return "LIVE";
+        if (in ({ "Voix Lead Rap", "Voix Lead Chant", "Voix Backs", "Voix Podcast" })) return "STEM : VOIX";
+        if (in ({ "Drums Bus Punch", "Drums Trap", "Drums Live Rock" })) return "STEM : DRUMS";
+        if (in ({ "Basse 808", "Basse Electrique" })) return "STEM : BASSE";
+        if (in ({ "Synthés Larges", "Guitares", "Piano / Claviers" })) return "STEM : INSTRUS";
         return "AUTRES";
     };
     for (auto& f : factory) f.category = cat (f.name);
@@ -111,7 +155,7 @@ juce::StringArray PresetManager::getFactoryNames() const
 std::vector<std::pair<juce::String, juce::StringArray>> PresetManager::getFactoryByCategory() const
 {
     static const char* order[] = { "BASE", "MASTER", "BASSES & PUNCH", "COULEUR & DYNAMIQUE", "STÉRÉO & ESPACE", "VOIX",
-                                    "VINTAGE & LO-FI", "LIVE", "AUTRES" };
+                                    "VINTAGE & LO-FI", "LIVE", "STEM : VOIX", "STEM : DRUMS", "STEM : BASSE", "STEM : INSTRUS", "AUTRES" };
     std::vector<std::pair<juce::String, juce::StringArray>> out;
     for (auto* o : order)
     {
