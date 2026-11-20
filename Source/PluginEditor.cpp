@@ -941,6 +941,164 @@ void AutoMasterPanel::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+// ONGLET MULTIBAND
+MultibandPage::MultibandPage (RavennProcessor& p) : proc (p)
+{
+    const char* names[4] = { "LOW", "LOW MID", "HIGH MID", "HIGH" };
+    for (int k = 0; k < 4; ++k)
+    {
+        const juce::String n (k + 1);
+        thr[k]   = knob ("mbThr" + n,   "THRESHOLD", ui::red,    tr ("Seuil de la bande ") + names[k] + tr (" : au-dessus, elle est compressée."));
+        ratio[k] = knob ("mbRatio" + n, "RATIO",     ui::violet, tr ("Force de la compression (2:1 doux, 4:1 ferme, 10:1 et plus : limitation)."));
+        gain[k]  = knob ("mbGain" + n,  "GAIN",      ui::cyan,   tr ("Volume de la bande après compression (make-up)."));
+        att[k]   = knob ("mbAtt" + n,   "ATTACK",    ui::pink,   tr ("Vitesse de réaction : court = pics domptés, long = attaques préservées."));
+        rel[k]   = knob ("mbRel" + n,   "RELEASE",   ui::pink,   tr ("Vitesse de relâchement de la bande."));
+        auto* so = pills.add (new Pill (p.apvts, "mbSolo" + n, "SOLO", ui::cyan, tr ("N'écoute que cette bande (plusieurs solos possibles).")));
+        auto* by = pills.add (new Pill (p.apvts, "mbByp" + n, "BYPASS", ui::amber, tr ("Laisse passer cette bande sans compression.")));
+        solo[k] = so; byp[k] = by;
+        addAndMakeVisible (so); addAndMakeVisible (by);
+    }
+    xo[0] = knob ("mbX1", "LOW | LMID", ui::pink, tr ("Coupure entre LOW et LOW MID."));
+    xo[1] = knob ("mbX2", "LMID | HMID", ui::pink, tr ("Coupure entre LOW MID et HIGH MID."));
+    xo[2] = knob ("mbX3", "HMID | HIGH", ui::pink, tr ("Coupure entre HIGH MID et HIGH."));
+    knee  = knob ("mbKnee", "KNEE", ui::violet, tr ("Genou : 0 = compression nette, 24 dB = très progressive."));
+    mix   = knob ("mbMix", "MIX", ui::cyan, tr ("Compression parallèle : mélange avec le signal non compressé."));
+    for (int k = 0; k < 2; ++k)
+    {
+        const juce::String n (k + 1);
+        dFreq[k]  = knob ("dynFreq" + n,  "FREQ",      ui::cyan,   tr ("Fréquence de la bande dynamique."));
+        dQ[k]     = knob ("dynQ" + n,     "Q",         ui::pink,   tr ("Largeur : petit Q = large, grand Q = étroit (résonance, sifflante)."));
+        dThr[k]   = knob ("dynThr" + n,   "THRESHOLD", ui::red,    tr ("Seuil : la bande n'agit que quand le niveau dans sa zone le dépasse."));
+        dRange[k] = knob ("dynRange" + n, "RANGE",     ui::violet, tr ("Plage : négatif = creuse quand ça déborde (de-esser, résonance), positif = remplit. 0 = inactive."));
+    }
+    onPill = pills.add (new Pill (p.apvts, "mbOn", "MULTIBAND ON", ui::cyan, tr ("Active le compresseur multibande.")));
+    addAndMakeVisible (onPill);
+    startTimerHz (30);
+}
+
+NeonKnob* MultibandPage::knob (const juce::String& id, const juce::String& title, juce::Colour c, const juce::String& tip)
+{
+    auto* k = knobs.add (new NeonKnob (proc.apvts, id, title, c, tip));
+    addAndMakeVisible (k);
+    return k;
+}
+
+void MultibandPage::timerCallback()
+{
+    for (int k = 0; k < 4; ++k)
+        grDisp[(size_t) k] = juce::jmin (proc.mbGrAcc[(size_t) k].exchange (0.f), grDisp[(size_t) k] * 0.85f);
+    for (auto& a : meterArea) repaint (a);
+    for (auto& a : dynArea) repaint (a);
+}
+
+void MultibandPage::resized()
+{
+    using namespace juce;
+    const float s = (float) getWidth() / 976.f;
+    auto px = [s] (float v) { return roundToInt (v * s); };
+    auto all = getLocalBounds();
+    mbPanel = all.removeFromLeft (px (700));
+    all.removeFromLeft (px (12));
+    dynPanel = all;
+
+    auto a = mbPanel.reduced (px (14)).withTrimmedTop (px (22));
+    auto bottom = a.removeFromBottom (px (86));
+    const int cw = a.getWidth() / 4;
+    for (int k = 0; k < 4; ++k)
+    {
+        auto col = a.removeFromLeft (cw).reduced (px (5), 0);
+        meterArea[(size_t) k] = col.removeFromTop (px (34));
+        auto pl = col.removeFromBottom (px (26));
+        solo[(size_t) k]->setBounds (pl.removeFromLeft (pl.getWidth() / 2).reduced (px (2), 0));
+        byp[(size_t) k]->setBounds (pl.reduced (px (2), 0));
+        col.removeFromBottom (px (4));
+        const int rh = col.getHeight();
+        thr[(size_t) k]->setBounds (col.removeFromTop (rh * 40 / 100).reduced (px (6), 0));
+        auto r1 = col.removeFromTop (col.getHeight() / 2), r2 = col;
+        ratio[(size_t) k]->setBounds (r1.removeFromLeft (r1.getWidth() / 2));
+        gain[(size_t) k]->setBounds (r1);
+        att[(size_t) k]->setBounds (r2.removeFromLeft (r2.getWidth() / 2));
+        rel[(size_t) k]->setBounds (r2);
+    }
+    const int bw = bottom.getWidth() / 6;
+    onPill->setBounds (bottom.removeFromLeft (bw).withSizeKeepingCentre (bw - px (8), px (30)));
+    for (auto* k : { xo[0], xo[1], xo[2], knee, mix }) k->setBounds (bottom.removeFromLeft (bw));
+
+    auto d = dynPanel.reduced (px (14)).withTrimmedTop (px (22));
+    d.removeFromBottom (px (52));
+    for (int k = 0; k < 2; ++k)
+    {
+        auto sec = d.removeFromTop (d.getHeight() / (2 - k));
+        dynArea[(size_t) k] = sec.removeFromTop (px (20));
+        auto r1 = sec.removeFromTop (sec.getHeight() / 2), r2 = sec;
+        dFreq[(size_t) k]->setBounds (r1.removeFromLeft (r1.getWidth() / 2));
+        dQ[(size_t) k]->setBounds (r1);
+        dThr[(size_t) k]->setBounds (r2.removeFromLeft (r2.getWidth() / 2));
+        dRange[(size_t) k]->setBounds (r2);
+    }
+}
+
+void MultibandPage::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    const float s = (float) getWidth() / 976.f;
+    drawPanelFrame (g, mbPanel.toFloat(), ui::red, s);
+    drawPanelTitle (g, mbPanel.toFloat(), "MULTIBAND COMPRESSOR", ui::red, s);
+    drawPanelFrame (g, dynPanel.toFloat(), ui::violet, s);
+    drawPanelTitle (g, dynPanel.toFloat(), "DYNAMIC EQ", ui::violet, s);
+
+    const bool on = proc.apvts.getRawParameterValue ("mbOn")->load() > 0.5f;
+    const float x1 = proc.apvts.getRawParameterValue ("mbX1")->load();
+    const float x2 = proc.apvts.getRawParameterValue ("mbX2")->load();
+    const float x3 = proc.apvts.getRawParameterValue ("mbX3")->load();
+    auto hzs = [] (float f) { f = (float) std::round (f); return f >= 995.f ? String (f / 1000.f, 1) + "k" : String ((int) f); };
+    const String names[4] = { "LOW", "LOW MID", "HIGH MID", "HIGH" };
+    const String ranges[4] = { "< " + hzs (x1) + " Hz", hzs (x1) + " - " + hzs (x2) + " Hz", hzs (x2) + " - " + hzs (x3) + " Hz", "> " + hzs (x3) + " Hz" };
+
+    for (int k = 0; k < 4; ++k)
+    {
+        auto r = meterArea[(size_t) k].toFloat();
+        auto top = r.removeFromTop (16.f * s);
+        g.setFont (ui::font (11.f * s, true, 0.25f));
+        g.setColour (ui::text);
+        g.drawText (names[k], top, Justification::centredLeft);
+        g.setFont (ui::font (9.5f * s, true, 0.1f));
+        g.setColour (ui::dim);
+        g.drawText (ranges[k], top, Justification::centredRight);
+        // barre de reduction de gain (0 a -18 dB)
+        auto bar = r.reduced (0, 4.f * s);
+        g.setColour (ui::track);
+        g.fillRect (bar);
+        const float gr = on ? jlimit (0.f, 1.f, -grDisp[(size_t) k] / 18.f) : 0.f;
+        if (gr > 0.f)
+        {
+            g.setGradientFill (ColourGradient (ui::red, bar.getX(), 0, ui::cyan, bar.getRight(), 0, false));
+            g.fillRect (bar.withWidth (bar.getWidth() * gr));
+        }
+        g.setColour (ui::text.withAlpha (0.85f));
+        g.setFont (ui::font (9.f * s, true));
+        g.drawText (on ? String (grDisp[(size_t) k], 1) + " dB" : String ("OFF"), bar, Justification::centredRight);
+    }
+
+    for (int k = 0; k < 2; ++k)
+    {
+        auto r = dynArea[(size_t) k].toFloat();
+        const float gdb = proc.dynGain[(size_t) k].load();
+        g.setFont (ui::font (11.f * s, true, 0.25f));
+        g.setColour (ui::text);
+        g.drawText ("BAND " + String (k + 1), r, Justification::centredLeft);
+        g.setColour (std::abs (gdb) > 0.05f ? ui::cyan : ui::dim);
+        g.drawText ((gdb > 0 ? "+" : "") + String (gdb, 1) + " dB", r, Justification::centredRight);
+    }
+
+    auto help = dynPanel.toFloat().reduced (16.f * s, 10.f * s).removeFromBottom (44.f * s);
+    g.setColour (ui::dim);
+    g.setFont (ui::font (10.f * s));
+    g.drawFittedText (tr ("Bandes libres : n'agissent que quand leur zone dépasse le seuil (de-esser, résonance, boue)."),
+                      help.toNearestInt(), Justification::bottomLeft, 3, 0.85f);
+}
+
+//==============================================================================
 namespace
 {
     const char* const helpDelta =
@@ -1026,7 +1184,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       satStyle2 (p.apvts, "satStyle2", tr ("Style de saturation de la bande médium.")),
       satStyle3 (p.apvts, "satStyle3", tr ("Style de saturation de la bande aiguë.")),
       charType  (p.apvts, "charType",  tr ("Modèle : bandes 15 / 30 ips, cassette, console à lampes, console classe A, transformateur, vinyle.")),
-      spectrum (p), scope (p), meters (p), autoMaster (p)
+      spectrum (p), scope (p), meters (p), autoMaster (p), mbPage (p)
 {
     setLookAndFeel (&lnf);
 
@@ -1036,7 +1194,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     // Toujours visibles
     for (auto* c : std::initializer_list<juce::Component*> {
              &noLatency, &bypass, &presetBox, &prevBtn, &nextBtn, &saveBtn, &folderBtn, &importBtn, &abBtn, &copyBtn,
-             &undoBtn, &redoBtn, &spectrum, &meters, &autoMaster })
+             &undoBtn, &redoBtn, &resetBtn, &spectrum, &meters, &autoMaster })
         addAndMakeVisible (c);
 
     // Pages : 0 CORE, 1 TONE & SPACE, 2 SATURATION, 3 LIMITER, 4 VOICE & REF
@@ -1058,15 +1216,18 @@ RavennEditor::RavennEditor (RavennProcessor& p)
         place (*c, 3);
     for (auto* c : std::initializer_list<juce::Component*> { &scDepth, &refMatch, &refImportBtn, &refClearBtn })
         place (*c, 4);
+    place (mbPage, 5);
 
-    const char* tabNames[5] = { "CORE", "TONE & SPACE", "SATURATION & CHARACTER", "LIMITER & OUTPUT", "VOICE & REFERENCE" };
-    for (int i = 0; i < 5; ++i)
+    const char* tabNames[6] = { "CORE", "TONE & SPACE", "SATURATION", "MULTIBAND", "LIMITER & OUTPUT", "VOICE & REF" };
+    const int tabPage[6] = { 0, 1, 2, 5, 3, 4 };
+    for (int i = 0; i < 6; ++i)
     {
         auto* t = tabs.add (new juce::TextButton (tabNames[i]));
         t->setClickingTogglesState (false);
         t->getProperties().set ("tab", true);
         t->setColour (juce::TextButton::buttonOnColourId, ui::violet);
-        t->onClick = [this, i] { setPage (i); };
+        t->onClick = [this, pg = tabPage[i]] { setPage (pg); };
+        t->getProperties().set ("page", tabPage[i]);
         addAndMakeVisible (t);
     }
 
@@ -1101,6 +1262,9 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     redoBtn.setButtonText ("REDO");
     redoBtn.setTooltip (tr ("Rétablir (redo)"));
     redoBtn.onClick = [this] { proc.undo.redo(); };
+    resetBtn.setButtonText ("RESET");
+    resetBtn.setTooltip (tr ("Remet TOUS les paramètres par défaut. Annulable avec UNDO, refaisable avec REDO."));
+    resetBtn.onClick = [this] { proc.resetAllParameters(); };
 
     refImportBtn.setButtonText (tr ("IMPORTER UNE RÉFÉRENCE"));
     refImportBtn.setColour (juce::TextButton::buttonOnColourId, ui::violet);
@@ -1158,7 +1322,7 @@ void RavennEditor::setPage (int pg)
 {
     page = pg;
     for (auto& [c, p] : pageOf) c->setVisible (p == page);
-    for (int i = 0; i < tabs.size(); ++i) tabs[i]->setToggleState (i == page, juce::dontSendNotification);
+    for (auto* tb : tabs) tb->setToggleState ((int) tb->getProperties()["page"] == page, juce::dontSendNotification);
     repaint();
 }
 
@@ -1445,18 +1609,19 @@ void RavennEditor::resized()
     // ---- En-tete
     header = R (0, 0, baseW, 70);
     logoArea = R (10, 6, 250, 58);
-    undoBtn.setBounds (R (256, 18, 50, 34));
-    redoBtn.setBounds (R (308, 18, 50, 34));
-    prevBtn.setBounds (R (364, 18, 28, 34));
-    presetBox.setBounds (R (394, 18, 222, 34));
-    nextBtn.setBounds (R (618, 18, 28, 34));
-    saveBtn.setBounds (R (652, 18, 58, 34));
-    folderBtn.setBounds (R (712, 18, 80, 34));
-    importBtn.setBounds (R (794, 18, 70, 34));
-    noLatency.setBounds (R (872, 18, 112, 34));
-    bypass.setBounds (R (990, 18, 86, 34));
-    abBtn.setBounds (R (1084, 18, 40, 34));
-    copyBtn.setBounds (R (1128, 18, 100, 34));
+    undoBtn.setBounds (R (254, 18, 46, 34));
+    redoBtn.setBounds (R (302, 18, 46, 34));
+    resetBtn.setBounds (R (350, 18, 54, 34));
+    prevBtn.setBounds (R (410, 18, 28, 34));
+    presetBox.setBounds (R (440, 18, 180, 34));
+    nextBtn.setBounds (R (622, 18, 28, 34));
+    saveBtn.setBounds (R (654, 18, 56, 34));
+    folderBtn.setBounds (R (712, 18, 76, 34));
+    importBtn.setBounds (R (790, 18, 66, 34));
+    noLatency.setBounds (R (864, 18, 112, 34));
+    bypass.setBounds (R (982, 18, 92, 34));
+    abBtn.setBounds (R (1080, 18, 40, 34));
+    copyBtn.setBounds (R (1126, 18, 102, 34));
 
     // ---- Zones fixes
     spectrum.setBounds (R (12, 82, 976, 214));
@@ -1606,6 +1771,9 @@ void RavennEditor::resized()
         charWow.setBounds (a.removeFromLeft (a.getWidth() / 2).reduced (px (6)));
         charNoise.setBounds (a.reduced (px (6)));
     }
+    // ================= PAGE 5 : MULTIBAND
+    mbPage.setBounds (R (12, Y, 976, H));
+
     // ================= PAGE 3 : LIMITER & OUTPUT
     area ("LIMITER") = R (12, Y, 640, H);
     area ("OUTPUT")  = R (664, Y, 324, H);

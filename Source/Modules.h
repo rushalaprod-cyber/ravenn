@@ -852,4 +852,174 @@ struct MatchEQ
     }
 };
 
+//==============================================================================
+// COMPRESSEUR MULTIBANDE 4 bandes (conception originale, dans l'esprit des
+// multibandes de mastering) : seuil, ratio, attaque, relachement, gain,
+// solo / bypass par bande, genou commun, mix parallele. Les bandes se
+// resomment exactement quand rien ne compresse.
+struct MultibandComp
+{
+    static constexpr int nb = 4;
+    struct Settings
+    {
+        double thr[nb] {}, ratio[nb] {}, att[nb] {}, rel[nb] {}, gain[nb] {};
+        bool solo[nb] {}, byp[nb] {};
+        double knee = 6, mix = 1;
+    };
+
+    std::array<std::array<LR4, 2>, 3> split;
+    std::array<double, 3> xf {};
+    std::array<double, nb> env {}, gDb {}, aC {}, rC {}, lastAtt {}, lastRel {};
+    std::array<double, nb> grMin {};
+    double fs = 0, gS = 0;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        xf.fill (0);
+        lastAtt.fill (-1); lastRel.fill (-1);
+        gS = 1.0 - std::exp (-1.0 / (0.0015 * fs));
+        reset();
+    }
+    void reset() noexcept
+    {
+        for (auto& s : split) for (auto& f : s) f.reset();
+        env.fill (0); gDb.fill (0); grMin.fill (0);
+    }
+    void setXover (double a, double b, double c) noexcept
+    {
+        const double v[3] = { a, std::max (a * 1.2, b), std::max (b * 1.2, c) };
+        for (int k = 0; k < 3; ++k)
+            if (v[k] != xf[(size_t) k])
+            {
+                xf[(size_t) k] = v[k];
+                for (auto& f : split[(size_t) k]) f.setLowpass (fs, v[k]);
+            }
+    }
+    void setTimes (const Settings& s) noexcept
+    {
+        for (int k = 0; k < nb; ++k)
+        {
+            if (s.att[k] != lastAtt[(size_t) k]) { aC[(size_t) k] = 1.0 - std::exp (-1.0 / (std::max (0.05, s.att[k]) * 0.001 * fs)); lastAtt[(size_t) k] = s.att[k]; }
+            if (s.rel[k] != lastRel[(size_t) k]) { rC[(size_t) k] = 1.0 - std::exp (-1.0 / (std::max (5.0, s.rel[k]) * 0.001 * fs)); lastRel[(size_t) k] = s.rel[k]; }
+        }
+    }
+
+    static double gainComputer (double over, double ratio, double knee) noexcept
+    {
+        const double slope = 1.0 / std::max (1.0, ratio) - 1.0;
+        if (knee > 0.0 && std::abs (over) <= knee * 0.5)
+            return slope * (over + knee * 0.5) * (over + knee * 0.5) / (2.0 * knee);
+        return over > 0.0 ? slope * over : 0.0;
+    }
+
+    inline void process (double* x, int nch, const Settings& s) noexcept
+    {
+        double b[nb][2] {};
+        for (int c = 0; c < nch; ++c)
+        {
+            const double v = x[c];
+            const double l0 = split[0][(size_t) c].process (v), r0 = v - l0;
+            const double l1 = split[1][(size_t) c].process (r0), r1 = r0 - l1;
+            const double l2 = split[2][(size_t) c].process (r1);
+            b[0][c] = l0; b[1][c] = l1; b[2][c] = l2; b[3][c] = r1 - l2;
+        }
+        bool anySolo = false;
+        for (int k = 0; k < nb; ++k) anySolo = anySolo || s.solo[k];
+
+        double g[nb];
+        for (int k = 0; k < nb; ++k)
+        {
+            double det = 0;
+            for (int c = 0; c < nch; ++c) det = std::max (det, std::abs (b[k][c]));
+            env[(size_t) k] += (det > env[(size_t) k] ? aC[(size_t) k] : rC[(size_t) k]) * (det - env[(size_t) k]);
+            const double L = 20.0 * std::log10 (env[(size_t) k] + 1e-9);
+            const double t = s.byp[k] ? 0.0 : gainComputer (L - s.thr[k], s.ratio[k], s.knee);
+            gDb[(size_t) k] += gS * (t - gDb[(size_t) k]);
+            grMin[(size_t) k] = std::min (grMin[(size_t) k], gDb[(size_t) k]);
+            g[k] = s.byp[k] ? 1.0 : std::pow (10.0, (gDb[(size_t) k] + s.gain[k]) / 20.0);
+        }
+        for (int c = 0; c < nch; ++c)
+        {
+            double y = 0, dry = 0;
+            for (int k = 0; k < nb; ++k)
+            {
+                dry += b[k][c];
+                if (anySolo && ! s.solo[k]) continue;
+                y += b[k][c] * g[k];
+            }
+            x[c] = anySolo ? y : dry + s.mix * (y - dry);
+        }
+    }
+};
+
+//==============================================================================
+// EQ DYNAMIQUE : 2 bandes flottantes. Quand le niveau dans la bande depasse le
+// seuil, la bande se creuse (plage negative) ou se remplit (plage positive),
+// jusqu'a la plage complete 12 dB au-dessus du seuil.
+struct DynEQ
+{
+    static constexpr int nf = 2;
+    struct Band
+    {
+        Biquad det;
+        std::array<Biquad, 2> pk;
+        double env = 0, g = 0, setG = 0, lastF = -1, lastQ = -1;
+    };
+    std::array<Band, nf> b;
+    double fs = 0, aC = 0, rC = 0;
+    int cnt = 0;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        aC = 1.0 - std::exp (-1.0 / (0.003 * fs));
+        rC = 1.0 - std::exp (-1.0 / (0.08 * fs));
+        for (auto& x : b) { x.lastF = x.lastQ = -1; }
+        reset();
+    }
+    void reset() noexcept
+    {
+        for (auto& x : b)
+        {
+            x.det.reset();
+            for (auto& f : x.pk) { f.reset(); f.peak (fs > 0 ? fs : 48000.0, 1000.0, 1.0, 0.0); }
+            x.env = x.g = x.setG = 0;
+        }
+    }
+
+    inline void process (double* x, int nch, const double* freq, const double* q, const double* thr, const double* range) noexcept
+    {
+        const double m = nch > 1 ? 0.5 * (x[0] + x[1]) : x[0];
+        const bool upd = ++cnt >= 16;
+        if (upd) cnt = 0;
+        for (int f = 0; f < nf; ++f)
+        {
+            auto& B = b[(size_t) f];
+            if (range[f] == 0.0 && std::abs (B.g) < 0.01) continue;
+            const bool moved = freq[f] != B.lastF || q[f] != B.lastQ;
+            if (moved)
+            {
+                const double w = 2 * pi * Biquad::clampF (fs, freq[f]) / fs, cw = std::cos (w), al = std::sin (w) / (2 * q[f]);
+                B.det.set (al, 0, -al, 1 + al, -2 * cw, 1 - al);
+                B.lastF = freq[f]; B.lastQ = q[f];
+            }
+            const double v = B.det.process (m);
+            B.env += (std::abs (v) > B.env ? aC : rC) * (std::abs (v) - B.env);
+            if (upd)
+            {
+                const double L = 20.0 * std::log10 (B.env + 1e-9);
+                const double target = range[f] * std::clamp ((L - thr[f]) / 12.0, 0.0, 1.0);
+                B.g += 0.3 * (target - B.g);
+                if (moved || std::abs (B.g - B.setG) > 0.05)
+                {
+                    for (auto& p : B.pk) p.peak (fs, freq[f], q[f], B.g);
+                    B.setG = B.g;
+                }
+            }
+            for (int c = 0; c < nch; ++c) x[c] = B.pk[(size_t) c].process (x[c]);
+        }
+    }
+};
+
 } // namespace gdsp

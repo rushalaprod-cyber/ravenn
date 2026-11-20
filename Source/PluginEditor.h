@@ -164,6 +164,33 @@ private:
 };
 
 //==============================================================================
+// Onglet MULTIBAND : compresseur 4 bandes + EQ dynamique 2 bandes
+class MultibandPage : public juce::Component, private juce::Timer
+{
+public:
+    explicit MultibandPage (RavennProcessor& p);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    void timerCallback() override;
+    NeonKnob* knob (const juce::String& id, const juce::String& title, juce::Colour c, const juce::String& tip);
+    RavennProcessor& proc;
+    juce::OwnedArray<NeonKnob> knobs;
+    juce::OwnedArray<Pill> pills;
+    std::array<NeonKnob*, 4> thr {}, ratio {}, att {}, rel {}, gain {};
+    std::array<Pill*, 4> solo {}, byp {};
+    std::array<NeonKnob*, 3> xo {};
+    NeonKnob *knee = nullptr, *mix = nullptr;
+    std::array<NeonKnob*, 2> dFreq {}, dQ {}, dThr {}, dRange {};
+    Pill* onPill = nullptr;
+    std::array<juce::Rectangle<int>, 4> meterArea;
+    std::array<juce::Rectangle<int>, 2> dynArea;
+    juce::Rectangle<int> mbPanel, dynPanel;
+    std::array<float, 4> grDisp {};
+};
+
+//==============================================================================
 class RavennEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -209,7 +236,7 @@ private:
 
     juce::ComboBox presetBox;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, saveBtn, folderBtn, importBtn, abBtn, copyBtn,
-                     undoBtn, redoBtn, refImportBtn, refClearBtn;
+                     undoBtn, redoBtn, resetBtn, refImportBtn, refClearBtn;
     juce::OwnedArray<juce::TextButton> tabs;
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -217,6 +244,7 @@ private:
     Scope scope;
     MeterColumn meters;
     AutoMasterPanel autoMaster;
+    MultibandPage mbPage;
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;

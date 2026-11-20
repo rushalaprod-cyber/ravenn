@@ -30,7 +30,9 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **FATTEN** (compression écrasante + saturation, COLOR sombre/brillant), **IMAGER 3 bandes**, **STABILIZER** (EQ dynamique vers un équilibre de master moderne ou celui de la référence), **VOICE FOCUS** (fait ressortir la voix d'un mix, sans sidechain).
 
-**UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
+**MULTIBAND** : compresseur 4 bandes (seuil, ratio, attaque, relâchement, gain, solo, bypass, 3 coupures réglables, knee, mix) + EQ dynamique 2 bandes flottantes (fréquence, Q, seuil, plage ±12 dB), dans l'esprit de Pro-MB et du C6 (conception originale).
+
+**RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
 Calés avec `Tools/Probe.cpp`, un banc qui charge un VST3 et mesure sa réponse (harmoniques à −30 / −24 /
@@ -51,8 +53,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.3.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.3.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.4.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.4.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

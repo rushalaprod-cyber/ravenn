@@ -183,6 +183,62 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     pct ("stabilize", "Stabilizer",    100.f, 0.f);
     pct ("voiceFocus","Voice Focus",   100.f, 0.f);
 
+    // 1.4 : compresseur multibande 4 bandes + EQ dynamique 2 bandes
+    toggle ("mbOn", "Multiband", false);
+    hz  ("mbX1", "MB Low/LowMid",   30.f, 600.f, 150.f, 120.f);
+    hz  ("mbX2", "MB LowMid/HiMid", 200.f, 5000.f, 1000.f, 1000.f);
+    hz  ("mbX3", "MB HiMid/High",   1500.f, 16000.f, 6000.f, 6000.f);
+    dB  ("mbKnee", "MB Knee", 0.f, 24.f, 6.f);
+    pct ("mbMix",  "MB Mix",  100.f, 100.f);
+    for (int b = 1; b <= 4; ++b)
+    {
+        const String n (b);
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mbThr" + n, 1 }, "MB" + n + " Threshold",
+                         NormalisableRange<float> (-60.f, 0.f, 0.1f), -18.f,
+                         AudioParameterFloatAttributes().withStringFromValueFunction (dbText).withLabel ("dB")));
+        {
+            NormalisableRange<float> r (1.f, 20.f, 0.01f);
+            r.setSkewForCentre (4.f);
+            v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mbRatio" + n, 1 }, "MB" + n + " Ratio", r, 2.5f,
+                             AudioParameterFloatAttributes().withStringFromValueFunction ([] (float x, int) { return String (x, x < 10.f ? 1 : 0) + ":1"; })));
+        }
+        {
+            NormalisableRange<float> r (0.1f, 200.f, 0.01f);
+            r.setSkewForCentre (15.f);
+            v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mbAtt" + n, 1 }, "MB" + n + " Attack", r, b == 1 ? 25.f : 10.f,
+                             AudioParameterFloatAttributes().withStringFromValueFunction (msText).withLabel ("ms")));
+        }
+        {
+            NormalisableRange<float> r (10.f, 2000.f, 0.1f);
+            r.setSkewForCentre (150.f);
+            v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mbRel" + n, 1 }, "MB" + n + " Release", r, b == 1 ? 200.f : 120.f,
+                             AudioParameterFloatAttributes().withStringFromValueFunction (msText).withLabel ("ms")));
+        }
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mbGain" + n, 1 }, "MB" + n + " Gain",
+                         NormalisableRange<float> (-12.f, 12.f, 0.1f), 0.f,
+                         AudioParameterFloatAttributes().withStringFromValueFunction (dbText).withLabel ("dB")));
+        v.push_back (std::make_unique<AudioParameterBool> (ParameterID { "mbSolo" + n, 1 }, "MB" + n + " Solo", false));
+        v.push_back (std::make_unique<AudioParameterBool> (ParameterID { "mbByp" + n, 1 }, "MB" + n + " Bypass", false));
+    }
+    for (int b = 1; b <= 2; ++b)
+    {
+        const String n (b);
+        {
+            NormalisableRange<float> r (30.f, 16000.f, 1.f);
+            r.setSkewForCentre (1000.f);
+            v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "dynFreq" + n, 1 }, "Dyn" + n + " Freq", r, b == 1 ? 250.f : 3500.f,
+                             AudioParameterFloatAttributes().withStringFromValueFunction (hzText).withLabel ("Hz")));
+        }
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "dynQ" + n, 1 }, "Dyn" + n + " Q",
+                         NormalisableRange<float> (0.3f, 8.f, 0.01f, 0.5f), 1.2f));
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "dynThr" + n, 1 }, "Dyn" + n + " Threshold",
+                         NormalisableRange<float> (-60.f, 0.f, 0.1f), -30.f,
+                         AudioParameterFloatAttributes().withStringFromValueFunction (dbText).withLabel ("dB")));
+        v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "dynRange" + n, 1 }, "Dyn" + n + " Range",
+                         NormalisableRange<float> (-12.f, 12.f, 0.1f), 0.f,
+                         AudioParameterFloatAttributes().withStringFromValueFunction (dbText).withLabel ("dB")));
+    }
+
     return { v.begin(), v.end() };
 }
 
@@ -225,6 +281,24 @@ RavennProcessor::RavennProcessor()
     p.fatten = get ("fatten");     p.fatColor = get ("fatColor");
     p.imgLow = get ("imgLow");     p.imgMid = get ("imgMid");       p.imgHigh = get ("imgHigh");
     p.stabilize = get ("stabilize"); p.voiceFocus = get ("voiceFocus");
+    p.mbOn = get ("mbOn"); p.mbKnee = get ("mbKnee"); p.mbMix = get ("mbMix");
+    for (int k = 0; k < 3; ++k) p.mbX[k] = get (("mbX" + juce::String (k + 1)).toRawUTF8());
+    for (int k = 0; k < 4; ++k)
+    {
+        const juce::String n (k + 1);
+        p.mbThr[k] = apvts.getRawParameterValue ("mbThr" + n);   p.mbRatio[k] = apvts.getRawParameterValue ("mbRatio" + n);
+        p.mbAtt[k] = apvts.getRawParameterValue ("mbAtt" + n);   p.mbRel[k] = apvts.getRawParameterValue ("mbRel" + n);
+        p.mbGain[k] = apvts.getRawParameterValue ("mbGain" + n); p.mbSolo[k] = apvts.getRawParameterValue ("mbSolo" + n);
+        p.mbByp[k] = apvts.getRawParameterValue ("mbByp" + n);
+        mbGrAcc[(size_t) k].store (0.f);
+    }
+    for (int k = 0; k < 2; ++k)
+    {
+        const juce::String n (k + 1);
+        p.dynFreq[k] = apvts.getRawParameterValue ("dynFreq" + n); p.dynQ[k] = apvts.getRawParameterValue ("dynQ" + n);
+        p.dynThr[k] = apvts.getRawParameterValue ("dynThr" + n);   p.dynRange[k] = apvts.getRawParameterValue ("dynRange" + n);
+        dynGain[(size_t) k].store (0.f);
+    }
 
     for (int i = 0; i < scopeSize; ++i) { scopePeak[(size_t) i].store (0.f); scopeGr[(size_t) i].store (0.f); }
     for (auto& g : matchGains) g.store (0.f);
@@ -302,6 +376,8 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
                      &rFat, &rFocus, &rStab })
         r->snap();
     stabilizer.prepare (sampleRate);
+    mbComp.prepare (sampleRate);
+    dynEq.prepare (sampleRate);
     voiceFocus.prepare (sampleRate);
     for (int b = 0; b < nOct; ++b) setOctaveFilter (amOutOct[(size_t) b], sampleRate, b);
     for (auto& r : rSat) r.snap();
@@ -375,6 +451,8 @@ void RavennProcessor::resetFilters()
     fattener.reset();
     imager.reset();
     stabilizer.reset();
+    mbComp.reset();
+    dynEq.reset();
     voiceFocus.reset();
 }
 
@@ -669,6 +747,46 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
     }
     rOtt.finish(); rPunch.finish(); rSpace.finish();
+
+    // ---------- 5b. MULTIBANDE 4 bandes + EQ DYNAMIQUE
+    if (p.mbOn->load() > 0.5f)
+    {
+        gdsp::MultibandComp::Settings ms;
+        for (int k = 0; k < 4; ++k)
+        {
+            ms.thr[k] = p.mbThr[k]->load(); ms.ratio[k] = p.mbRatio[k]->load();
+            ms.att[k] = p.mbAtt[k]->load(); ms.rel[k] = p.mbRel[k]->load(); ms.gain[k] = p.mbGain[k]->load();
+            ms.solo[k] = p.mbSolo[k]->load() > 0.5f; ms.byp[k] = p.mbByp[k]->load() > 0.5f;
+        }
+        ms.knee = p.mbKnee->load(); ms.mix = p.mbMix->load() * 0.01;
+        mbComp.setXover (p.mbX[0]->load(), p.mbX[1]->load(), p.mbX[2]->load());
+        mbComp.setTimes (ms);
+        mbComp.grMin.fill (0);
+        for (int i = 0; i < n; ++i)
+        {
+            double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            mbComp.process (x, nch, ms);
+            for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+        }
+        for (int k = 0; k < 4; ++k) updateMin (mbGrAcc[(size_t) k], (float) mbComp.grMin[(size_t) k]);
+    }
+    {
+        double fq[2], q[2], th[2], rg[2];
+        bool any = false;
+        for (int k = 0; k < 2; ++k)
+        {
+            fq[k] = p.dynFreq[k]->load(); q[k] = p.dynQ[k]->load(); th[k] = p.dynThr[k]->load(); rg[k] = p.dynRange[k]->load();
+            any = any || rg[k] != 0.0 || std::abs (dynEq.b[(size_t) k].g) > 0.01;
+        }
+        if (any)
+            for (int i = 0; i < n; ++i)
+            {
+                double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+                dynEq.process (x, nch, fq, q, th, rg);
+                for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+            }
+        for (int k = 0; k < 2; ++k) dynGain[(size_t) k].store ((float) dynEq.b[(size_t) k].g);
+    }
 
     // ---------- 6. Etages non lineaires (sur-echantillonnes, sauf No Latency)
     juce::dsp::AudioBlock<float> block (ch, (size_t) nch, (size_t) n);
@@ -1346,6 +1464,25 @@ void RavennProcessor::refineAutoMaster()
                  + juce::String::fromUTF8 ("\n") + amReport;
         amState.store (amDone, std::memory_order_release);
     }
+}
+
+//==============================================================================
+// RESET : tous les parametres a leur valeur par defaut, en UNE etape d'undo.
+// On passe par l'arbre de l'APVTS avec l'UndoManager : UNDO revient en arriere,
+// REDO refait le reset.
+void RavennProcessor::resetAllParameters()
+{
+    undo.beginNewTransaction ("Reset");
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+        {
+            auto child = apvts.state.getChildWithProperty ("id", rp->getParameterID());
+            const float def = rp->convertFrom0to1 (rp->getDefaultValue());
+            if (child.isValid()) child.setProperty ("value", def, &undo);
+            else rp->setValueNotifyingHost (rp->getDefaultValue());
+        }
+    undo.beginNewTransaction();
+    presets.setCurrentName (juce::String::fromUTF8 ("Défaut"));
 }
 
 //==============================================================================

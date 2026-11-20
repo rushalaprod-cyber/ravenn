@@ -55,6 +55,8 @@ public:
     std::atomic<float> effectiveClipDb { 0.f };
     std::atomic<float> scCutDb { 0.f };       // creusement max du sidechain voix
     std::atomic<bool> scConnected { false };
+    std::array<std::atomic<float>, 4> mbGrAcc;      // reduction par bande du multibande (dB)
+    std::array<std::atomic<float>, 2> dynGain;      // gain actuel des bandes dynamiques (dB)
 
     static constexpr int scopeSize = 512;
     std::array<std::atomic<float>, scopeSize> scopePeak, scopeGr;
@@ -65,6 +67,7 @@ public:
     std::atomic<int> specWrite { 0 };
 
     void requestMeterReset() { resetMetersFlag = true; }
+    void resetAllParameters();   // une seule etape d'undo
 
     // ---- A/B
     void switchAB();
@@ -134,7 +137,10 @@ private:
                            *charType {}, *charAmt {}, *charWow {}, *charNoise {},
                            *airMid {}, *airHigh {}, *voice {}, *voiceFreq {},
                            *depth3d {}, *space {}, *spaceSize {}, *scDepth {}, *refMatch {},
-                           *fatten {}, *fatColor {}, *imgLow {}, *imgMid {}, *imgHigh {}, *stabilize {}, *voiceFocus {};
+                           *fatten {}, *fatColor {}, *imgLow {}, *imgMid {}, *imgHigh {}, *stabilize {}, *voiceFocus {},
+                           *mbOn {}, *mbX[3] {}, *mbKnee {}, *mbMix {},
+                           *mbThr[4] {}, *mbRatio[4] {}, *mbAtt[4] {}, *mbRel[4] {}, *mbGain[4] {}, *mbSolo[4] {}, *mbByp[4] {},
+                           *dynFreq[2] {}, *dynQ[2] {}, *dynThr[2] {}, *dynRange[2] {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -174,6 +180,8 @@ private:
     gdsp::Imager imager;
     gdsp::Stabilizer stabilizer;
     gdsp::VoiceFocus voiceFocus;
+    gdsp::MultibandComp mbComp;
+    gdsp::DynEQ dynEq;
     juce::Random ditherRng;
     bool satWasOn = false, charWasOn = false, airWasOn = false, fatWasOn = false;
     float lastVoice = 1000.f, lastVoiceF = -1.f;

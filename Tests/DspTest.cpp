@@ -104,6 +104,10 @@ int main()
         { "Limiteur off clip+12", { { "limOn", 0 }, { "clip", 12 } }, true },
         { "Fatten 100 couleur 100", { { "fatten", 100 }, { "fatColor", 100 } }, true },
         { "Imager + Stabilizer + Focus", { { "imgLow", 0 }, { "imgHigh", 200 }, { "stabilize", 100 }, { "voiceFocus", 100 } }, true },
+        { "Multibande 4 bandes",  { { "mbOn", 1 }, { "mbThr1", -40 }, { "mbThr2", -40 }, { "mbThr3", -40 }, { "mbThr4", -40 },
+                                    { "mbRatio1", 20 }, { "mbRatio2", 20 }, { "mbRatio3", 20 }, { "mbRatio4", 20 }, { "mbAtt2", 0.1f }, { "mbGain2", 12 } }, true },
+        { "Multibande solo LOW",  { { "mbOn", 1 }, { "mbSolo1", 1 } }, true },
+        { "EQ dynamique +-12",    { { "dynRange1", -12 }, { "dynThr1", -50 }, { "dynRange2", 12 }, { "dynThr2", -50 }, { "dynQ2", 8 } }, true },
         { "Tout a fond 1.2",      { { "in", 15 }, { "mouth", 100 }, { "mask", 100 }, { "satDrive1", 24 }, { "satDrive2", 24 },
                                     { "satDrive3", 24 }, { "charAmt", 100 }, { "airMid", 100 }, { "airHigh", 100 }, { "depth3d", 100 },
                                     { "space", 100 }, { "ott", 100 }, { "punch", 100 }, { "limGain", 24 }, { "os", 4 } }, true },
@@ -413,6 +417,43 @@ int main()
         std::printf ("%-22s %d etapes  %s\n", "Undo profondeur", n, check (n >= 100));
     }
 
+    // --- Multibande : la compression agit et se mesure par bande
+    {
+        RavennProcessor p;
+        setP (p, "mbOn", 1);
+        for (int k = 1; k <= 4; ++k) { setP (p, ("mbThr" + juce::String (k)).toRawUTF8(), -35); setP (p, ("mbRatio" + juce::String (k)).toRawUTF8(), 6); }
+        run (p, 48000.0, 512, 0.5f, 3.0);
+        float gr[4]; bool all = true;
+        for (int k = 0; k < 4; ++k) { gr[k] = p.mbGrAcc[(size_t) k].load(); all = all && gr[k] < -1.f; }
+        std::printf ("%-22s GR %.1f / %.1f / %.1f / %.1f dB  %s\n", "Multibande GR", gr[0], gr[1], gr[2], gr[3], check (all));
+
+        // sans compression (seuil 0 dB, ratio 1) : transparent (bandes resommees)
+        RavennProcessor a, b;
+        setP (a, "mbOn", 0); setP (b, "mbOn", 1);
+        for (int k = 1; k <= 4; ++k) setP (b, ("mbThr" + juce::String (k)).toRawUTF8(), 0);
+        for (auto* q : { &a, &b }) { setP (*q, "noLatency", 1); setP (*q, "limOn", 0); }
+        const auto ra = run (a, 48000.0, 512, 0.2f, 2.0, true), rb = run (b, 48000.0, 512, 0.2f, 2.0, true);
+        const float d = diffDb (rb.out, ra.out);
+        std::printf ("%-22s difference %.1f dB  %s\n", "Multibande neutre", d, check (d < -60.f));
+    }
+
+    // --- RESET : tout revient par defaut, UNDO annule, REDO refait
+    {
+        RavennProcessor p;
+        setP (p, "mouth", 80); setP (p, "mbOn", 1); setP (p, "limGain", 9);
+        p.getStateInformation (*std::make_unique<juce::MemoryBlock>());   // pousse les valeurs dans l'arbre
+        p.undo.beginNewTransaction();
+        auto val = [&] (const char* id) { return p.apvts.getRawParameterValue (id)->load(); };
+        p.resetAllParameters();
+        const bool resetOk = val ("mouth") == 0.f && val ("mbOn") < 0.5f && val ("limGain") == 0.f;
+        p.undo.undo();
+        const bool undoOk = std::abs (val ("mouth") - 80.f) < 0.01f && val ("mbOn") > 0.5f && std::abs (val ("limGain") - 9.f) < 0.01f;
+        p.undo.redo();
+        const bool redoOk = val ("mouth") == 0.f && val ("limGain") == 0.f;
+        std::printf ("%-22s reset %s, undo %s, redo %s  %s\n", "RESET + undo/redo", resetOk ? "ok" : "NON", undoOk ? "ok" : "NON",
+                     redoOk ? "ok" : "NON", check (resetOk && undoOk && redoOk));
+    }
+
     // --- Undo / redo
     {
         RavennProcessor p;
@@ -487,7 +528,7 @@ int main()
         setP (p, "depth", 20); setP (p, "analog", 25); setP (p, "width", 120); setP (p, "tilt", 1.5f);
         run (p, 48000.0, 512, 0.8f, 6.0);
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        for (int pg = 0; pg < 5; ++pg)
+        for (int pg = 0; pg < 6; ++pg)
         {
             if (auto* re = dynamic_cast<RavennEditor*> (ed.get())) re->setPage (pg);
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
