@@ -127,6 +127,7 @@ private:
     juce::dsp::FFT fft { order };
     std::vector<float> work, window, dbIn, dbOut;
     float viewTop = 0.f;
+    bool inSilent = true, outSilent = true;
     juce::Image backdrop;
 };
 
@@ -179,7 +180,7 @@ private:
     void savePreset();
     void importPresets();
     void importReference();
-    void buildBackground();
+    void buildBackground (float pxScale);
     void place (juce::Component& c, int page);
 
     struct Panel
@@ -200,7 +201,8 @@ private:
              limGain, limCeil, limLook, limAttack, limRelease, limLinkT, limLinkR, limSoft,
              satXLo, satXHi, satMix, satDrive1, satDrive2, satDrive3,
              charAmt, charWow, charNoise, airMid, airHigh, voice, voiceFreq,
-             depth3d, space, spaceSize, scDepth, refMatch;
+             depth3d, space, spaceSize, scDepth, refMatch,
+             fatten, fatColor, imgLow, imgMid, imgHigh, stabilize, voiceFocus;
     Segmented maskBand, clipShape, clipBand, eqPos, os, dither;
     Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity;
     ChoiceBox limStyle, satStyle1, satStyle2, satStyle3, charType;
@@ -221,7 +223,8 @@ private:
     juce::Rectangle<int> header, logoArea, tabArea, refInfoArea, scInfoArea;
     juce::Image background, ravenImg, ravenCrisp, coverImg;
     juce::String shownPreset, refText, scText;
-    int shownAB = -1, page = 0;
+    int shownAB = -1, page = 0, bgPage = -1;
+    float bgScale = 0.f;
     bool shownBypass = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RavennEditor)

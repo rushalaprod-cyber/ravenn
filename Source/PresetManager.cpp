@@ -39,9 +39,12 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
         { u8 ("Voix Devant"),       { { "voice", 2.5f }, { "voiceFreq", 2800.0f }, { "airMid", 20.0f }, { "mask", 15.0f },
                                       { "maskBand", 2.0f } } },
         { u8 ("Streaming -14 Propre"), { { "limGain", 4.0f }, { "limCeil", -1.0f }, { "limStyle", 0.0f }, { "clip", 2.0f },
-                                      { "clipShape", 1.0f }, { "amTarget", 4.0f } } },
+                                      { "clipShape", 1.0f }, { "amTarget", 5.0f } } },
+        { u8 ("Gros Saucisson"),    { { "fatten", 55.0f }, { "fatColor", 60.0f }, { "clip", 2.0f }, { "clipShape", 1.0f } } },
+        { u8 ("Large 3 Bandes"),    { { "imgLow", 60.0f }, { "imgMid", 115.0f }, { "imgHigh", 140.0f }, { "depth3d", 30.0f }, { "monoBass", 1.0f } } },
+        { u8 ("Voix En Avant"),     { { "voiceFocus", 60.0f }, { "voiceFreq", 2800.0f }, { "stabilize", 30.0f } } },
         { u8 ("Loud Club"),         { { "in", 3.0f }, { "clip", 5.0f }, { "clipShape", 1.0f }, { "limGain", 4.0f }, { "limStyle", 5.0f },
-                                      { "punch", 20.0f }, { "mouth", 25.0f }, { "amTarget", 1.0f } } },
+                                      { "punch", 20.0f }, { "mouth", 25.0f }, { "amTarget", 2.0f } } },
     };
     current = factory.front().name;
 }

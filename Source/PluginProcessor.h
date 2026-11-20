@@ -40,7 +40,7 @@ public:
     juce::AudioProcessorParameter* getBypassParameter() const override { return apvts.getParameter ("bypass"); }
 
     //==============================================================================
-    juce::UndoManager undo;
+    juce::UndoManager undo { 400000, 100 };   // 100 etapes d'annulation au minimum
     juce::AudioProcessorValueTreeState apvts;
     PresetManager presets;
 
@@ -86,6 +86,8 @@ public:
     RefInfo getRefInfo() const { const juce::SpinLock::ScopedLockType l (refLock); return ref; }
     static constexpr int nOct = 10;
     std::array<std::atomic<float>, nOct> matchGains;   // EQ de correspondance (dB)
+    std::array<std::atomic<float>, nOct> refOct;       // copie lisible par le thread audio
+    std::atomic<bool> refValid { false };
 
     // ---- Auto master
     enum AMState : int { amIdle = 0, amListening, amAnalyzed, amRefining, amRefined, amDone };
@@ -95,7 +97,7 @@ public:
     void cancelAutoMaster();
     void autoMasterTick();
     juce::String getAutoMasterReport() const { return amReport; }
-    static constexpr int numTargets = 8;
+    static constexpr int numTargets = 9;
     static float targetLufs (int idx);
 
     static constexpr double amListenSeconds = 6.0;
@@ -131,7 +133,8 @@ private:
                            *satXLo {}, *satXHi {}, *satMix {}, *satDrive[3] {}, *satStyle[3] {},
                            *charType {}, *charAmt {}, *charWow {}, *charNoise {},
                            *airMid {}, *airHigh {}, *voice {}, *voiceFreq {},
-                           *depth3d {}, *space {}, *spaceSize {}, *scDepth {}, *refMatch {};
+                           *depth3d {}, *space {}, *spaceSize {}, *scDepth {}, *refMatch {},
+                           *fatten {}, *fatColor {}, *imgLow {}, *imgMid {}, *imgHigh {}, *stabilize {}, *voiceFocus {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -167,12 +170,16 @@ private:
     gdsp::SpaceVerb space;
     gdsp::VoiceDuck voiceDuck;
     gdsp::MatchEQ matchEq;
+    gdsp::Fattener fattener;
+    gdsp::Imager imager;
+    gdsp::Stabilizer stabilizer;
+    gdsp::VoiceFocus voiceFocus;
     juce::Random ditherRng;
-    bool satWasOn = false, charWasOn = false, airWasOn = false;
+    bool satWasOn = false, charWasOn = false, airWasOn = false, fatWasOn = false;
     float lastVoice = 1000.f, lastVoiceF = -1.f;
 
     gdsp::Ramp rIn, rWidth, rMix, rOut, rMouth, rMask, rDepth, rAnalog, rClip, rBody, rPunch, rOtt, rBypass,
-               r3d, rSpace, rAirM, rAirH, rChar, rSatMix;
+               r3d, rSpace, rAirM, rAirH, rChar, rSatMix, rFat, rFocus, rStab;
     std::array<gdsp::Ramp, 3> rSat;
     float lastOttTime = -1.f;
 
@@ -203,7 +210,8 @@ private:
 
     std::array<gdsp::Biquad, 2> amShelf, amHp, amOutShelf, amOutHp;
     std::array<gdsp::BandFilter, 5> amBands;
-    std::array<gdsp::BandFilter, nOct> amOct;
+    std::array<gdsp::BandFilter, nOct> amOct, amOutOct;
+    std::array<double, nOct> amWinOutOct {};
     gdsp::LR4 amLowS, amLowM;
     bool amBlockActive = false;
     double amWinInK = 0, amWinOutK = 0, amWinSec = 0;

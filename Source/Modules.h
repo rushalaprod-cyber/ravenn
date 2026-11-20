@@ -480,31 +480,210 @@ struct FreshAir
 };
 
 //==============================================================================
-// 3D / PROFONDEUR : Side decorrele dans les aigus (allpass, mono-compatible)
-// + Mid un peu plus "devant".
+// 3D / PROFONDEUR (mono-compatible : on ne touche qu'au Side, sauf une
+// legere presence sur le Mid) :
+//  - le Side existant est decorrele dans les aigus (allpass) ;
+//  - une copie dephasee des aigus du Mid est injectee dans le Side : ca ouvre
+//    meme un mix tres mono, et ca disparait parfaitement en mono (L+R) ;
+//  - le Mid recoit une petite presence a 3,2 kHz (il "avance").
 struct Depth3D
 {
-    Biquad sideHP, front;
-    std::array<Biquad, 4> ap;
+    Biquad sideHP, midHP, front;
+    std::array<Biquad, 4> ap, ap2;
     double fs = 48000, lastAmt = -1;
 
     void prepare (double sampleRate)
     {
         fs = sampleRate;
         sideHP.highpass (fs, 250, 0.7);
-        static constexpr double f[4] = { 700, 1700, 3900, 8200 };
-        for (int i = 0; i < 4; ++i) makeAllpass (ap[(size_t) i], fs, f[i], 0.6);
+        midHP.highpass (fs, 800, 0.6);
+        static constexpr double f[4]  = { 700, 1700, 3900, 8200 };
+        static constexpr double f2[4] = { 2300, 4100, 6900, 11000 };
+        for (int i = 0; i < 4; ++i) { makeAllpass (ap[(size_t) i], fs, f[i], 0.6); makeAllpass (ap2[(size_t) i], fs, f2[i], 0.5); }
         lastAmt = -1;
     }
-    void reset() noexcept { sideHP.reset(); front.reset(); for (auto& a : ap) a.reset(); }
+    void reset() noexcept { sideHP.reset(); midHP.reset(); front.reset(); for (auto& a : ap) a.reset(); for (auto& a : ap2) a.reset(); }
 
     inline void process (double& M, double& S, double amt) noexcept
     {
         if (amt != lastAmt) { front.peak (fs, 3200, 0.8, 1.6 * amt); lastAmt = amt; }
         double d = sideHP.process (S);
         for (auto& a : ap) d = a.process (d);
-        S += amt * 0.75 * d;
+        double e = midHP.process (M);
+        for (auto& a : ap2) e = a.process (e);
+        S += amt * (0.75 * d + 0.5 * e);
         M = front.process (M);
+    }
+};
+
+//==============================================================================
+// FATTEN : compression ecrasante + saturation (epaissit et colle tout).
+// COLOR : pre-accentuation avant la saturation (sombre <-> brillant).
+// Conception originale, dans l'esprit des "fatteners" a un bouton.
+struct Fattener
+{
+    std::array<Biquad, 2> pre, post, low;
+    double env = 0, aC = 0, rC = 0, fs = 0, lastAmt = -1, lastCol = -1;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        aC = 1.0 - std::exp (-1.0 / (0.0008 * fs));
+        rC = 1.0 - std::exp (-1.0 / (0.06 * fs));
+        lastAmt = lastCol = -1;
+    }
+    void reset() noexcept { for (auto* a : { &pre, &post, &low }) for (auto& f : *a) f.reset(); env = 0; }
+
+    void set (double amt, double col) noexcept
+    {
+        if (amt == lastAmt && col == lastCol) return;
+        lastAmt = amt; lastCol = col;
+        const double tilt = (col - 0.5) * 12.0;
+        for (int c = 0; c < 2; ++c)
+        {
+            pre[(size_t) c].highShelf (fs, 1500, 0.5, tilt);
+            post[(size_t) c].highShelf (fs, 1500, 0.5, -tilt * 0.8);
+            low[(size_t) c].lowShelf (fs, 90, 0.7, 2.5 * amt);
+        }
+    }
+
+    inline void process (double* x, int nch, double amt) noexcept
+    {
+        const double drive = std::pow (10.0, 18.0 * amt / 20.0);
+        double det = 0;
+        for (int c = 0; c < nch; ++c) det = std::max (det, std::abs (x[c]) * drive);
+        env += (det > env ? aC : rC) * (det - env);
+        constexpr double thr = 0.25, ratio = 8.0;
+        const double gr = env > thr ? std::pow (env / thr, -(1.0 - 1.0 / ratio)) : 1.0;
+        const double wetAmt = std::min (1.0, amt * 1.5);
+        for (int c = 0; c < nch; ++c)
+        {
+            double v = pre[(size_t) c].process (x[c]) * drive * gr;
+            v = std::tanh (v * 1.2) / 1.2;
+            v = low[(size_t) c].process (post[(size_t) c].process (v)) * 2.2;
+            x[c] += wetAmt * (v - x[c]);
+        }
+    }
+};
+
+//==============================================================================
+// IMAGER 3 bandes : largeur du Side par bande (mono-compatible).
+struct Imager
+{
+    std::array<LR4, 2> split;
+    double fs = 0, lo = 0, hi = 0;
+    void set (double sampleRate, double loHz, double hiHz) noexcept
+    {
+        if (sampleRate == fs && loHz == lo && hiHz == hi) return;
+        fs = sampleRate; lo = loHz; hi = hiHz;
+        split[0].setLowpass (fs, lo); split[1].setLowpass (fs, hi);
+    }
+    void reset() noexcept { for (auto& s : split) s.reset(); }
+    inline double process (double S, const double* w) noexcept
+    {
+        const double b0 = split[0].process (S), rest = S - b0;
+        const double b1 = split[1].process (rest), b2 = rest - b1;
+        return b0 * w[0] + b1 * w[1] + b2 * w[2];
+    }
+};
+
+//==============================================================================
+// STABILIZER : EQ dynamique qui ramene en douceur l'equilibre par octave vers
+// une courbe cible (celle de la reference si elle est chargee).
+struct Stabilizer
+{
+    static constexpr int nb = 10;
+    static constexpr double fc[nb] = { 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+    std::array<BandFilter, nb> det;
+    std::array<double, nb> pw {}, g {}, setG {};
+    std::array<std::array<Biquad, 2>, nb> eq;
+    double fs = 0, sm = 0;
+    int cnt = 0;
+    bool active = false;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        for (int b = 0; b < nb; ++b)
+        {
+            const double lo = fc[b] / std::sqrt (2.0), hi = fc[b] * std::sqrt (2.0);
+            det[(size_t) b].set (fs, lo, hi < fs * 0.45 ? hi : 0.0);
+            for (auto& f : eq[(size_t) b]) f.peak (fs, fc[b], 1.2, 0.0);
+        }
+        sm = 1.0 - std::exp (-1.0 / (1.2 * fs));
+        reset();
+    }
+    void reset() noexcept
+    {
+        for (auto& d : det) d.reset();
+        for (auto& a : eq) for (auto& f : a) f.reset();
+        pw.fill (0); g.fill (0); setG.fill (0); active = false;
+    }
+
+    // target : energie relative par octave en dB (somme = 0 dB)
+    inline void process (double* x, int nch, double amt, const float* target) noexcept
+    {
+        const double m = nch > 1 ? 0.5 * (x[0] + x[1]) : x[0];
+        for (int b = 0; b < nb; ++b) { const double v = det[(size_t) b].process (m); pw[(size_t) b] += sm * (v * v - pw[(size_t) b]); }
+
+        if (++cnt >= 64)
+        {
+            cnt = 0;
+            double tot = 0;
+            for (auto v : pw) tot += v;
+            active = false;
+            for (int b = 0; b < nb; ++b)
+            {
+                double tgt = 0;
+                if (tot > 1.0e-7 && amt > 0.0)
+                {
+                    const double rel = 10.0 * std::log10 (std::max (pw[(size_t) b], 1e-20) / tot);
+                    const double lim = (b == 0 || b == nb - 1) ? 3.0 : 6.0;
+                    tgt = std::clamp (-(rel - target[b]) * 0.6 * amt, -lim * amt, lim * amt);
+                }
+                g[(size_t) b] += 0.02 * (tgt - g[(size_t) b]);
+                if (std::abs (g[(size_t) b] - setG[(size_t) b]) > 0.05)
+                {
+                    for (auto& f : eq[(size_t) b]) f.peak (fs, fc[b], 1.2, g[(size_t) b]);
+                    setG[(size_t) b] = g[(size_t) b];
+                }
+                active = active || std::abs (setG[(size_t) b]) > 0.01;
+            }
+        }
+        if (! active) return;
+        for (int c = 0; c < nch; ++c)
+            for (int b = 0; b < nb; ++b)
+                x[c] = eq[(size_t) b][(size_t) c].process (x[c]);
+    }
+};
+
+//==============================================================================
+// VOICE FOCUS (sans sidechain) : fait ressortir la voix d'un mix.
+// La voix est au centre : on la pousse sur le Mid (presence), on enleve un peu
+// de boue (300 Hz) et on degage le Side dans sa zone (300 Hz - 5 kHz) pour la
+// demasquer. Mono-compatible.
+struct VoiceFocus
+{
+    Biquad bell, mud, sHP, sLP;
+    double fs = 0, lastAmt = -1, lastF = -1;
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        sHP.highpass (fs, 300, 0.7); sLP.lowpass (fs, 5000, 0.7);
+        lastAmt = lastF = -1;
+    }
+    void reset() noexcept { bell.reset(); mud.reset(); sHP.reset(); sLP.reset(); }
+    inline void process (double& M, double& S, double amt, double freq) noexcept
+    {
+        if (amt != lastAmt || freq != lastF)
+        {
+            bell.peak (fs, freq, 0.8, 4.0 * amt);
+            mud.peak (fs, 320, 0.9, -2.0 * amt);
+            lastAmt = amt; lastF = freq;
+        }
+        const double vb = sLP.process (sHP.process (S));
+        S -= amt * 0.8 * vb;
+        M = mud.process (bell.process (M));
     }
 };
 

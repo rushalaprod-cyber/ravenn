@@ -28,7 +28,9 @@ Interface en 5 pages : **CORE**, **TONE & SPACE**, **SATURATION & CHARACTER**, *
 **DELTA** : écoute uniquement la différence entre le son traité et l'original, ramenés au même volume :
 ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affiche alors cette différence.
 
-**UNDO / REDO**, A/B, presets (dossier ouvrable, import de fichiers `.preset`).
+**FATTEN** (compression écrasante + saturation, COLOR sombre/brillant), **IMAGER 3 bandes**, **STABILIZER** (EQ dynamique vers un équilibre de master moderne ou celui de la référence), **VOICE FOCUS** (fait ressortir la voix d'un mix, sans sidechain).
+
+**UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
 Calés avec `Tools/Probe.cpp`, un banc qui charge un VST3 et mesure sa réponse (harmoniques à −30 / −24 /
@@ -38,19 +40,19 @@ La saturation multibande et le limiteur sont des conceptions originales (aucun c
 d'iZotope ou d'un autre éditeur n'a été lu ou copié).
 
 ## Auto master
-Cibles : **0 LUFS (max)**, −7 Loud, −9 Club, −11 Spotify Loud, −14 Streaming, −16 Apple Music,
+Cibles : **0 LUFS (max)**, −4 Extreme, −7 Loud, −9 Club, −11 Spotify Loud, −14 Streaming, −16 Apple Music,
 −23 EBU R128 (TV), **REFERENCE**. Lance la lecture et clique **AUTO MASTER** : 6 s d'écoute, réglages
 (EQ, couleur, stéréo, limiteur : −1 dBTP pour le streaming / la TV, −0,3 dB pour le club), puis
 ajustement du niveau. En mode REFERENCE, il vise le loudness de la référence importée, recopie son
-équilibre par octave (EQ MATCH) et sa largeur stéréo.
+équilibre par octave (EQ MATCH, corrigé en boucle fermée en mesurant la sortie) et sa largeur stéréo.
 
 ## Mesures
 LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper, spectre entrée /
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.2.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.2.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.3.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.3.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

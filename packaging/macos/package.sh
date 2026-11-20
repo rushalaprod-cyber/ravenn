@@ -5,7 +5,7 @@ set -euo pipefail
 
 ART="$1"
 OUT="$2"
-VER="1.2.0"
+VER="1.3.0"
 STAGE="$(mktemp -d)"
 mkdir -p "$OUT" "$STAGE/vst3" "$STAGE/au" "$STAGE/app"
 

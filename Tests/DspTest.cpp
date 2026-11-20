@@ -102,6 +102,8 @@ int main()
         { "Limiteur +18 Stealth", { { "limGain", 18 }, { "limStyle", 8 }, { "limCeil", -1 } }, true },
         { "Limiteur sans lookahead", { { "limGain", 18 }, { "limLook", 0 } }, true },
         { "Limiteur off clip+12", { { "limOn", 0 }, { "clip", 12 } }, true },
+        { "Fatten 100 couleur 100", { { "fatten", 100 }, { "fatColor", 100 } }, true },
+        { "Imager + Stabilizer + Focus", { { "imgLow", 0 }, { "imgHigh", 200 }, { "stabilize", 100 }, { "voiceFocus", 100 } }, true },
         { "Tout a fond 1.2",      { { "in", 15 }, { "mouth", 100 }, { "mask", 100 }, { "satDrive1", 24 }, { "satDrive2", 24 },
                                     { "satDrive3", 24 }, { "charAmt", 100 }, { "airMid", 100 }, { "airHigh", 100 }, { "depth3d", 100 },
                                     { "space", 100 }, { "ott", 100 }, { "punch", 100 }, { "limGain", 24 }, { "os", 4 } }, true },
@@ -237,7 +239,7 @@ int main()
                      check (r.valid && r.lufs > -30.f && r.lufs < 0.f));
 
         // auto master en mode REFERENCE : vise le loudness de la reference
-        setP (p, "amTarget", 7);
+        setP (p, "amTarget", 8);
         p.prepareToPlay (48000.0, 512);
         p.startAutoMaster();
         run (p, 48000.0, 512, 0.15f, 40.0, false, true);
@@ -246,6 +248,169 @@ int main()
         std::printf ("%-22s ref %.1f obtenu %.1f LUFS  match %.0f %%  %s\n", "Auto master REF", r.lufs, o.lufs,
                      p.apvts.getRawParameterValue ("refMatch")->load(), check (std::abs (o.lufs - r.lufs) < 1.5f));
         wav.deleteFile();
+    }
+
+    // --- 3D : sur un signal MONO, la 3D doit ouvrir la stereo (correlation en baisse)
+    //     sans changer le mono (L+R) au-dela de la petite presence du centre
+    {
+        auto runMono = [] (float d3, double& corr, double& monoE)
+        {
+            RavennProcessor p;
+            setP (p, "depth3d", d3); setP (p, "body", 0); setP (p, "limOn", 0); setP (p, "noLatency", 1);
+            p.prepareToPlay (48000.0, 512);
+            juce::AudioBuffer<float> buf (2, 512); juce::MidiBuffer midi; Gen gen (48000.0);
+            double lr = 0, ll = 0, rr = 0; monoE = 0;
+            gdsp::BandFilter hl, hr; hl.set (48000.0, 1000.0, 0.0); hr.set (48000.0, 1000.0, 0.0);
+            for (int k = 0; k < 300; ++k)
+            {
+                gen.fill (buf, 512, 0.4f);
+                buf.copyFrom (1, 0, buf, 0, 0, 512);           // mono parfait
+                p.processBlock (buf, midi);
+                if (k < 50) continue;
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double L = buf.getSample (0, i), R = buf.getSample (1, i);
+                    const double hL = hl.process (L), hR = hr.process (R);
+                    lr += hL * hR; ll += hL * hL; rr += hR * hR; monoE += (L + R) * (L + R);
+                }
+            }
+            corr = lr / std::sqrt (ll * rr + 1e-20);
+        };
+        double c0, m0, c1, m1;
+        runMono (0, c0, m0); runMono (100, c1, m1);
+        const double monoDiff = 10.0 * std::log10 (m1 / m0);
+        std::printf ("%-22s correlation %.3f -> %.3f, mono %+.2f dB  %s\n", "3D mono (> 1 kHz)", c0, c1, monoDiff,
+                     check (c0 > 0.999 && c1 < 0.9 && std::abs (monoDiff) < 1.0));
+    }
+
+    // --- Voice Focus : la zone de la voix monte au centre, les cotes s'ecartent
+    {
+        auto bandMS = [] (float focus, double& midE, double& sideE)
+        {
+            RavennProcessor p;
+            setP (p, "voiceFocus", focus); setP (p, "body", 0); setP (p, "limOn", 0); setP (p, "noLatency", 1);
+            p.prepareToPlay (48000.0, 512);
+            juce::AudioBuffer<float> buf (2, 512); juce::MidiBuffer midi; juce::Random rng (7);
+            gdsp::BandFilter bm, bs; bm.set (48000.0, 1500, 4000); bs.set (48000.0, 1500, 4000);
+            midE = sideE = 0;
+            for (int k = 0; k < 200; ++k)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float m = (rng.nextFloat() * 2 - 1) * 0.2f, s = (rng.nextFloat() * 2 - 1) * 0.1f;
+                    buf.setSample (0, i, m + s); buf.setSample (1, i, m - s);
+                }
+                p.processBlock (buf, midi);
+                if (k < 40) continue;
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double M = 0.5 * (buf.getSample (0, i) + buf.getSample (1, i)), S = 0.5 * (buf.getSample (0, i) - buf.getSample (1, i));
+                    const double a = bm.process (M), b = bs.process (S);
+                    midE += a * a; sideE += b * b;
+                }
+            }
+        };
+        double m0, s0, m1, s1;
+        bandMS (0, m0, s0); bandMS (100, m1, s1);
+        const double dm = 10.0 * std::log10 (m1 / m0), ds = 10.0 * std::log10 (s1 / s0);
+        std::printf ("%-22s centre %+.1f dB, cotes %+.1f dB (zone 1,5-4 kHz)  %s\n", "Voice Focus", dm, ds, check (dm > 2.0 && ds < -3.0));
+    }
+
+    // --- Fatten : plus dense (moins de dynamique crete/RMS)
+    {
+        auto crest = [] (float fat)
+        {
+            RavennProcessor p;
+            setP (p, "fatten", fat); setP (p, "limOn", 0);
+            const auto r = run (p, 48000.0, 512, 0.25f, 4.0, true);
+            double pk = 0, e = 0;
+            for (size_t i = r.out.size() / 2; i < r.out.size(); ++i) { pk = std::max (pk, (double) std::abs (r.out[i])); e += r.out[i] * (double) r.out[i]; }
+            return 20.0 * std::log10 (pk / std::sqrt (e / (double) (r.out.size() / 2)));
+        };
+        const double c0 = crest (0), c1 = crest (100);
+        std::printf ("%-22s crete/RMS %.1f dB -> %.1f dB  %s\n", "Fatten densite", c0, c1, check (c1 < c0 - 3.0));
+    }
+
+    // --- Reference avec un autre equilibre (aigus +6 dB, graves -4 dB) :
+    //     apres l'auto master, l'equilibre par octave de la sortie doit s'en approcher
+    {
+        juce::File wav = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ravenn_ref_tilt.wav");
+        wav.deleteFile();
+        {
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::OutputStream> os (wav.createOutputStream().release());
+            std::unique_ptr<juce::AudioFormatWriter> w (fmt.createWriterFor (os.get(), 48000.0, 2, 24, {}, 0));
+            if (w != nullptr)
+            {
+                os.release();
+                Gen gen (48000.0);
+                gdsp::Biquad hs[2], ls[2];
+                for (int c = 0; c < 2; ++c) { hs[c].highShelf (48000.0, 4000, 0.7, 6.0); ls[c].lowShelf (48000.0, 100, 0.7, -4.0); }
+                juce::AudioBuffer<float> b (2, 4800);
+                for (int k = 0; k < 150; ++k)
+                {
+                    gen.fill (b, 4800, 0.5f);
+                    for (int c = 0; c < 2; ++c)
+                        for (int i = 0; i < 4800; ++i)
+                            b.setSample (c, i, (float) ls[c].process (hs[c].process (b.getSample (c, i))));
+                    w->writeFromAudioSampleBuffer (b, 0, 4800);
+                }
+            }
+        }
+        auto octRel = [] (const std::vector<float>& inter, std::array<double, 10>& rel)
+        {
+            static constexpr double fc[10] = { 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+            std::array<gdsp::BandFilter, 10> f;
+            for (int b = 0; b < 10; ++b) f[(size_t) b].set (48000.0, fc[b] / std::sqrt (2.0), b < 9 ? fc[b] * std::sqrt (2.0) : 0.0);
+            std::array<double, 10> e {};
+            for (size_t i = inter.size() / 2; i + 1 < inter.size(); i += 2)
+            {
+                const double M = 0.5 * (inter[i] + inter[i + 1]);
+                for (int b = 0; b < 10; ++b) { const double v = f[(size_t) b].process (M); e[(size_t) b] += v * v; }
+            }
+            double tot = 1e-20; for (auto v : e) tot += v;
+            for (int b = 0; b < 10; ++b) rel[(size_t) b] = 10.0 * std::log10 (std::max (e[(size_t) b], 1e-20) / tot);
+        };
+        RavennProcessor p;
+        p.loadReference (wav);
+        for (int k = 0; k < 400 && p.refState.load() == RavennProcessor::refLoading; ++k) juce::Thread::sleep (25);
+        const auto r = p.getRefInfo();
+
+        // spectre de l'entree brute (sans traitement)
+        RavennProcessor dry; setP (dry, "bypass", 1);
+        const auto din = run (dry, 48000.0, 512, 0.3f, 8.0, true);
+        std::array<double, 10> relIn {}, relOut {};
+        octRel (din.out, relIn);
+
+        setP (p, "amTarget", 8);
+        p.prepareToPlay (48000.0, 512);
+        p.startAutoMaster();
+        run (p, 48000.0, 512, 0.3f, 60.0, false, true);
+        const auto o = run (p, 48000.0, 512, 0.3f, 8.0, true);
+        octRel (o.out, relOut);
+        double eIn = 0, eOut = 0;
+        for (int b = 1; b <= 8; ++b)
+        {
+            eIn += std::pow (relIn[(size_t) b] - r.oct[(size_t) b], 2);
+            eOut += std::pow (relOut[(size_t) b] - r.oct[(size_t) b], 2);
+        }
+        eIn = std::sqrt (eIn / 8.0); eOut = std::sqrt (eOut / 8.0);
+        std::printf ("%-22s ecart moyen a la ref : %.2f dB avant -> %.2f dB apres  (%s)  %s\n", "Reference EQ match", eIn, eOut,
+                     p.getAutoMasterReport().upToFirstOccurrenceOf ("\n", false, false).toRawUTF8(), check (eOut < eIn * 0.5 && eOut < 1.5));
+        wav.deleteFile();
+    }
+
+    // --- Undo : au moins 100 etapes conservees
+    {
+        RavennProcessor p;
+        for (int k = 0; k < 120; ++k)
+        {
+            p.undo.beginNewTransaction();
+            p.apvts.state.setProperty ("u", k, &p.undo);
+        }
+        int n = 0;
+        while (p.undo.canUndo() && n < 500) { p.undo.undo(); ++n; }
+        std::printf ("%-22s %d etapes  %s\n", "Undo profondeur", n, check (n >= 100));
     }
 
     // --- Undo / redo
@@ -286,10 +451,10 @@ int main()
     }
 
     // --- Auto master : doit approcher la cible de loudness
-    for (int tgt : { 4, 2, 1, 6 })
+    for (int tgt : { 5, 3, 2, 1, 7 })
         for (float g : { 0.15f, 0.6f })
         {
-            const float targets[8] = { 0.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
+            const float targets[9] = { 0.f, -4.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
             RavennProcessor p;
             setP (p, "amTarget", (float) tgt);
             p.prepareToPlay (48000.0, 512);

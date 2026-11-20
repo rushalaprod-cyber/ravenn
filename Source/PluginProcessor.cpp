@@ -17,10 +17,13 @@ namespace
     inline double dbToGain (double db) { return std::pow (10.0, db / 20.0); }
     inline double toLufs (double ms)   { return ms > 1e-12 ? -0.691 + 10.0 * std::log10 (ms) : -100.0; }
 
-    // Cibles : 0 LUFS (max), -7 loud, -9 club, -11 Spotify loud, -14 streaming,
-    // -16 Apple Music, -23 EBU R128 (TV), reference importee
-    constexpr float amTargets[RavennProcessor::numTargets] = { 0.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
-    constexpr int refTargetIdx = 7;
+    // Cibles : 0 LUFS (max), -4 tres fort, -7 loud, -9 club, -11 Spotify loud,
+    // -14 streaming, -16 Apple Music, -23 EBU R128 (TV), reference importee
+    constexpr float amTargets[RavennProcessor::numTargets] = { 0.f, -4.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
+    constexpr int refTargetIdx = 8;
+
+    // Courbe cible du Stabilizer sans reference : equilibre typique d'un master moderne
+    constexpr float defaultTilt[RavennProcessor::nOct] = { -6.f, -2.f, -1.f, -2.5f, -4.5f, -6.5f, -8.5f, -10.5f, -13.f, -18.f };
 
     // Constantes calees par mesure de MONSTER (banc Tools/Probe.cpp), ajustement
     // numerique sur 4 niveaux : -30 / -24 / -18 / -12 dBFS
@@ -110,8 +113,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     choice ("os",    "Oversampling", { "x1", "x2", "x4", "x8", "x16" }, 1);
     toggle ("noLatency", "No Latency", false);
     choice ("amTarget", "Auto Master Target",
-            { "0 LUFS (MAX)", "-7 LOUD", "-9 CLUB", "-11 SPOTIFY LOUD", "-14 STREAMING",
-              "-16 APPLE MUSIC", "-23 EBU R128 (TV)", "REFERENCE" }, 2);
+            { "0 LUFS (MAX)", "-4 EXTREME", "-7 LOUD", "-9 CLUB", "-11 SPOTIFY LOUD", "-14 STREAMING",
+              "-16 APPLE MUSIC", "-23 EBU R128 (TV)", "REFERENCE" }, 3);
     toggle ("bypass", "Bypass",      false);
     pct ("punch",    "Punch",        100.f, 0.f);
     pct ("ott",      "OTT Depth",    100.f, 0.f);
@@ -171,6 +174,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     pct ("scDepth",  "Voice Sidechain", 100.f, 0.f);
     pct ("refMatch", "Reference Match", 100.f, 0.f);
 
+    // 1.3
+    pct ("fatten",    "Fatten",        100.f, 0.f);
+    pct ("fatColor",  "Fatten Color",  100.f, 50.f);
+    pct ("imgLow",    "Imager Low",    200.f, 100.f);
+    pct ("imgMid",    "Imager Mid",    200.f, 100.f);
+    pct ("imgHigh",   "Imager High",   200.f, 100.f);
+    pct ("stabilize", "Stabilizer",    100.f, 0.f);
+    pct ("voiceFocus","Voice Focus",   100.f, 0.f);
+
     return { v.begin(), v.end() };
 }
 
@@ -210,6 +222,9 @@ RavennProcessor::RavennProcessor()
     p.voice = get ("voice");       p.voiceFreq = get ("voiceFreq");
     p.depth3d = get ("depth3d");   p.space = get ("space");         p.spaceSize = get ("spaceSize");
     p.scDepth = get ("scDepth");   p.refMatch = get ("refMatch");
+    p.fatten = get ("fatten");     p.fatColor = get ("fatColor");
+    p.imgLow = get ("imgLow");     p.imgMid = get ("imgMid");       p.imgHigh = get ("imgHigh");
+    p.stabilize = get ("stabilize"); p.voiceFocus = get ("voiceFocus");
 
     for (int i = 0; i < scopeSize; ++i) { scopePeak[(size_t) i].store (0.f); scopeGr[(size_t) i].store (0.f); }
     for (auto& g : matchGains) g.store (0.f);
@@ -283,8 +298,12 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     scopeAcc = 0.f;
 
     for (auto* r : { &rIn, &rWidth, &rMix, &rOut, &rMouth, &rMask, &rDepth, &rAnalog, &rClip,
-                     &rBody, &rPunch, &rOtt, &rBypass, &r3d, &rSpace, &rAirM, &rAirH, &rChar, &rSatMix })
+                     &rBody, &rPunch, &rOtt, &rBypass, &r3d, &rSpace, &rAirM, &rAirH, &rChar, &rSatMix,
+                     &rFat, &rFocus, &rStab })
         r->snap();
+    stabilizer.prepare (sampleRate);
+    voiceFocus.prepare (sampleRate);
+    for (int b = 0; b < nOct; ++b) setOctaveFilter (amOutOct[(size_t) b], sampleRate, b);
     for (auto& r : rSat) r.snap();
 
     punchFx.prepare (sampleRate);
@@ -353,6 +372,10 @@ void RavennProcessor::resetFilters()
     space.reset();
     voiceDuck.reset();
     matchEq.reset();
+    fattener.reset();
+    imager.reset();
+    stabilizer.reset();
+    voiceFocus.reset();
 }
 
 //==============================================================================
@@ -451,6 +474,10 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     const double charAmt = p.charAmt->load() * 0.01, charNoise = p.charNoise->load() * 0.01;
     const double scDepth = p.scDepth->load() * 0.01, refMatch = p.refMatch->load() * 0.01;
     const double satMix = p.satMix->load() * 0.01;
+    const double fatAmt = p.fatten->load() * 0.01, stabAmt = p.stabilize->load() * 0.01;
+    const double focusAmt = p.voiceFocus->load() * 0.01;
+    const double imgW[3] = { p.imgLow->load() * 0.01, p.imgMid->load() * 0.01, p.imgHigh->load() * 0.01 };
+    const bool imgOn = std::abs (imgW[0] - 1.0) + std::abs (imgW[1] - 1.0) + std::abs (imgW[2] - 1.0) > 1e-4;
     double satDrive[3]; int satStyle[3];
     bool satOn = false;
     for (int b = 0; b < 3; ++b)
@@ -496,6 +523,9 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     space.setSize (p.spaceSize->load() * 0.01);
     msat.setXover (osRate, p.satXLo->load(), p.satXHi->load());
     if (osRate != freshAir.fs) freshAir.prepare (osRate);
+    if (osRate != fattener.fs) fattener.prepare (osRate);
+    fattener.set (fatAmt, p.fatColor->load() * 0.01);
+    imager.set (baseRate, 250.0, 4000.0);
     character.set (osRate, charType, charAmt);
 
     depthLP.setLowpass (osRate, 110.0);
@@ -564,6 +594,25 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             ch[c][i] = (float) v;
         }
 
+    // ---------- 2b. STABILIZER : equilibre par octave ramene vers la cible
+    rStab.set (stabAmt, n);
+    if (stabAmt > 0.0 || rStab.cur > 0.0 || stabilizer.active)
+    {
+        float target[nOct];
+        const bool rv = refValid.load();
+        double tot = 0;
+        for (int b = 0; b < nOct; ++b) { target[b] = rv ? refOct[(size_t) b].load() : defaultTilt[b]; tot += std::pow (10.0, target[b] / 10.0); }
+        const float norm = (float) (10.0 * std::log10 (std::max (tot, 1e-20)));
+        for (auto& t : target) t -= norm;
+        for (int i = 0; i < n; ++i)
+        {
+            double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            stabilizer.process (x, nch, rStab.next(), target);
+            for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+        }
+    }
+    rStab.finish();
+
     // ---------- 3. Sidechain voix (la voix creuse la prod la ou elle chante)
     if (nsc > 0 && scDepth > 0.0)
     {
@@ -579,25 +628,28 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     else scCutDb.store (0.f);
 
     // ---------- 4. Stereo, presence voix (Mid), 3D
-    rWidth.set (width, n); r3d.set (d3, n);
+    rWidth.set (width, n); r3d.set (d3, n); rFocus.set (focusAmt, n);
     const bool voiceOn = std::abs (p.voice->load()) > 0.01f;
+    const double vFreq = p.voiceFreq->load();
     for (int i = 0; i < n; ++i)
     {
-        const double wd = rWidth.next(), dd = r3d.next();
+        const double wd = rWidth.next(), dd = r3d.next(), fo = rFocus.next();
         if (nch == 2)
         {
             double M = (ch[0][i] + ch[1][i]) * 0.5;
             double S = (ch[0][i] - ch[1][i]) * 0.5 * wd;
+            if (imgOn) S = imager.process (S, imgW);
             const double hp = sideHP.process (S);
             if (monoBass) S = hp;
             if (voiceOn) M = voicePeak.process (M);
+            if (fo > 0.0) voiceFocus.process (M, S, fo, vFreq);
             if (dd > 0.0) depth3d.process (M, S, dd);
             ch[0][i] = (float) (M + S);
             ch[1][i] = (float) (M - S);
         }
         else if (voiceOn) ch[0][i] = (float) voicePeak.process (ch[0][i]);
     }
-    rWidth.finish(); r3d.finish();
+    rWidth.finish(); r3d.finish(); rFocus.finish();
 
     // ---------- 5. OTT, PUNCH, SPACE (avant la saturation : le clipper rattrape tout)
     rOtt.set (ott, n); rPunch.set (punch, n); rSpace.set (spaceAmt, n);
@@ -629,6 +681,10 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     rAnalog.set (analog, on); rClip.set (dbToGain (clipEffDb), on);
     rAirM.set (airM, on); rAirH.set (airH, on); rChar.set (charAmt, on); rSatMix.set (satMix, on);
     for (int b = 0; b < 3; ++b) rSat[(size_t) b].set (dbToGain (satDrive[b]), on);
+    rFat.set (fatAmt, on);
+    const bool fatOn = fatAmt > 0.0 || rFat.cur > 0.0;
+    if (fatOn && ! fatWasOn) fattener.reset();
+    fatWasOn = fatOn;
 
     const bool charOn = charAmt > 0.0 || rChar.cur > 0.0;
     const bool airOn  = airM > 0.0 || airH > 0.0 || rAirM.cur > 0.0 || rAirH.cur > 0.0;
@@ -669,6 +725,12 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         else
         {
             x[0] = applyDepth (x[0], de);
+        }
+
+        // FATTEN : compression ecrasante + saturation
+        {
+            const double fa = rFat.next();
+            if (fatOn && fa > 0.0) fattener.process (x, nch, fa);
         }
 
         // SATURATION MULTIBANDE
@@ -726,7 +788,7 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         }
     }
     rMouth.finish(); rMask.finish(); rDepth.finish(); rAnalog.finish(); rClip.finish(); rBody.finish();
-    rAirM.finish(); rAirH.finish(); rChar.finish(); rSatMix.finish();
+    rAirM.finish(); rAirH.finish(); rChar.finish(); rSatMix.finish(); rFat.finish();
     for (auto& r : rSat) r.finish();
 
     os.processSamplesDown (block);
@@ -922,6 +984,8 @@ void RavennProcessor::loadReference (const juce::File& f)
             const juce::SpinLock::ScopedLockType l (refLock);
             ref = r;
         }
+        for (int b = 0; b < nOct; ++b) refOct[(size_t) b].store (r.oct[(size_t) b]);
+        refValid.store (r.valid);
         refState.store (r.valid ? refReady : refError);
     };
     refThread = std::move (t);
@@ -935,6 +999,7 @@ void RavennProcessor::clearReference()
         const juce::SpinLock::ScopedLockType l (refLock);
         ref = {};
     }
+    refValid.store (false);
     refState.store (refNone);
     for (auto& g : matchGains) g.store (0.f);
     setParamValue ("refMatch", 0.f);
@@ -989,6 +1054,7 @@ void RavennProcessor::analyzeInput (float* const* ch, int nch, int n)
         amWinInK = amWinOutK = amWinSec = 0;
         for (auto& f : amOutShelf) f.reset();
         for (auto& f : amOutHp) f.reset();
+        amWinOutOct.fill (0);
     }
 
     double blockMs = 0;
@@ -1066,13 +1132,20 @@ void RavennProcessor::analyzeOutput (float* const* ch, int nch, int n)
             const double kr = amOutHp[1].process (amOutShelf[1].process (ch[1][i]));
             k += kr * kr;
         }
+        // spectre par octave de la sortie (pour l'EQ match en boucle fermee)
+        const double M = nch > 1 ? 0.5 * (ch[0][i] + ch[1][i]) : ch[0][i];
+        for (int b = 0; b < nOct; ++b)
+        {
+            const double v = amOutOct[(size_t) b].process (M);
+            if (amBlockActive) amWinOutOct[(size_t) b] += v * v;
+        }
         if (amBlockActive) amWinOutK += k;
     }
 
     if (amBlockActive)
     {
         amWinSec += n / baseRate;
-        const float base = 0.6f + 0.4f * (float) amIter / 4.f;
+        const float base = 0.6f + 0.4f * (float) amIter / 6.f;
         amProgress.store (base + 0.1f * (float) juce::jmin (1.0, amWinSec / amRefineSeconds));
         if (amWinSec >= amRefineSeconds)
             amState.store (amRefined, std::memory_order_release);
@@ -1176,6 +1249,9 @@ void RavennProcessor::applyAutoMaster()
     setParamValue ("bypass", 0.f);
     setParamValue ("body", 1.f);
     setParamValue ("ott", 0.f);
+    setParamValue ("fatten", 0.f);
+    setParamValue ("stabilize", useRef ? 0.f : 20.f);
+    for (auto* id : { "imgLow", "imgMid", "imgHigh" }) setParamValue (id, 100.f);
     setParamValue ("punch", punch);
     setParamValue ("link", 0.f);
     setParamValue ("delta", 0.f);
@@ -1234,7 +1310,28 @@ void RavennProcessor::refineAutoMaster()
     setParamValue ("clip", (float) newClip);
     setParamValue ("in", in);
 
-    if (std::abs (diff) > 0.5 && ! maxed && ++amIter < 4)
+    // Reference : on mesure l'equilibre par octave de la SORTIE et on corrige
+    // l'EQ match (boucle fermee : tout le reste de la chaine est pris en compte)
+    double worst = 0;
+    const int idx = juce::jlimit (0, numTargets - 1, (int) p.amTarget->load());
+    if (idx == refTargetIdx && refValid.load())
+    {
+        double tot = 1e-20;
+        for (auto v : amWinOutOct) tot += v;
+        double d[nOct];
+        for (int b = 0; b < nOct; ++b)
+            d[b] = (double) refOct[(size_t) b].load() - 10.0 * std::log10 (std::max (amWinOutOct[(size_t) b], 1e-20) / tot);
+        for (int b = 0; b < nOct; ++b)
+        {
+            const double sm = 0.2 * d[juce::jmax (0, b - 1)] + 0.6 * d[b] + 0.2 * d[juce::jmin (nOct - 1, b + 1)];
+            const double lim = (b == 0 || b == nOct - 1) ? 6.0 : 9.0;
+            const float ng = (float) juce::jlimit (-lim, lim, (double) matchGains[(size_t) b].load() + juce::jlimit (-3.0, 3.0, 0.75 * sm));
+            matchGains[(size_t) b].store (ng);
+            if (b >= 1 && b <= 8) worst = std::max (worst, std::abs (d[b]));
+        }
+    }
+
+    if ((std::abs (diff) > 0.5 || worst > 1.0) && ! maxed && ++amIter < 6)
     {
         amResetWindow.store (true);
         amState.store (amRefining, std::memory_order_release);
@@ -1245,6 +1342,7 @@ void RavennProcessor::refineAutoMaster()
         amReport = juce::String::fromUTF8 ("Cible ") + juce::String ((int) std::lround (amTargetLufs)) + " LUFS"
                  + juce::String::fromUTF8 (" · obtenu ≈ ") + juce::String (maxed ? predicted : predicted + step * 0.85, 1)
                  + (maxed ? juce::String::fromUTF8 (" (maximum physique atteint)") : juce::String())
+                 + (worst > 0.0 ? juce::String::fromUTF8 (" · écart avec la réf ") + juce::String (worst, 1) + " dB max" : juce::String())
                  + juce::String::fromUTF8 ("\n") + amReport;
         amState.store (amDone, std::memory_order_release);
     }
