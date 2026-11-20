@@ -57,8 +57,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.5.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.5.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.5.1-windows-setup.exe`.
+- **macOS** : `ravenn-1.5.1-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

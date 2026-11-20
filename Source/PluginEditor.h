@@ -228,7 +228,7 @@ private:
 };
 
 //==============================================================================
-class RavennEditor : public juce::AudioProcessorEditor, private juce::Timer
+class RavennEditor : public juce::AudioProcessorEditor, public juce::FileDragAndDropTarget, private juce::Timer
 {
 public:
     explicit RavennEditor (RavennProcessor&);
@@ -237,6 +237,12 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void setPage (int page);
+
+    // glisser-deposer d'un morceau de reference
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray&, int, int) override { dropHover = true; repaint(); }
+    void fileDragExit (const juce::StringArray&) override { dropHover = false; repaint(); }
+    void filesDropped (const juce::StringArray& files, int, int) override;
 
 private:
     void timerCallback() override;
@@ -296,6 +302,7 @@ private:
     float bgScale = 0.f;
     bool shownBypass = false;
     float dsGrDisp = 0.f;
+    bool dropHover = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RavennEditor)
 };

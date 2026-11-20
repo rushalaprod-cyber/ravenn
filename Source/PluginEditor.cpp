@@ -1494,7 +1494,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     refImportBtn.setButtonText (tr ("IMPORTER UNE RÉFÉRENCE"));
     refImportBtn.setColour (juce::TextButton::buttonOnColourId, ui::violet);
     refImportBtn.setToggleState (true, juce::dontSendNotification);
-    refImportBtn.setTooltip (tr ("WAV, AIFF, FLAC, MP3… Un master que tu aimes : l'auto master (cible REFERENCE) s'en rapproche."));
+    refImportBtn.setTooltip (tr ("WAV, AIFF, FLAC, MP3… Tu peux aussi glisser-déposer le fichier n'importe où sur ravenn."));
     refImportBtn.onClick = [this] { importReference(); };
     refClearBtn.setButtonText ("RETIRER");
     refClearBtn.onClick = [this] { proc.clearReference(); };
@@ -1603,6 +1603,31 @@ void RavennEditor::importPresets()
         if (safe->proc.presets.importFiles (fc.getResults()) > 0)
             safe->refreshPresets();
     });
+}
+
+static bool isAudioFile (const juce::String& path)
+{
+    const auto ext = juce::File (path).getFileExtension().toLowerCase();
+    return ext == ".wav" || ext == ".aif" || ext == ".aiff" || ext == ".flac" || ext == ".mp3" || ext == ".ogg" || ext == ".m4a";
+}
+
+bool RavennEditor::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (auto& f : files) if (isAudioFile (f)) return true;
+    return false;
+}
+
+void RavennEditor::filesDropped (const juce::StringArray& files, int, int)
+{
+    dropHover = false;
+    for (auto& f : files)
+        if (isAudioFile (f) && juce::File (f).existsAsFile())
+        {
+            proc.loadReference (juce::File (f));
+            setPage (4);   // onglet VOICE & REF : on voit l'analyse arriver
+            break;
+        }
+    repaint();
 }
 
 void RavennEditor::importReference()
@@ -1830,6 +1855,15 @@ void RavennEditor::paint (juce::Graphics& g)
         g.drawFittedText (scText, scInfoArea, Justification::topLeft, 3, 0.85f);
     }
 
+    if (dropHover)
+    {
+        g.setColour (Colours::black.withAlpha (0.6f));
+        g.fillRect (getLocalBounds());
+        g.setColour (ui::cyan);
+        g.drawRect (getLocalBounds().reduced (roundToInt (8 * s)), roundToInt (2 * s));
+        g.setFont (ui::font (22.f * s, true, 0.2f));
+        g.drawText (ui::tr ("LÂCHE LE MORCEAU : IL DEVIENT TA RÉFÉRENCE"), getLocalBounds(), Justification::centred);
+    }
     if (proc.apvts.getRawParameterValue ("bypass")->load() > 0.5f)
     {
         g.setColour (Colours::black.withAlpha (0.35f));
