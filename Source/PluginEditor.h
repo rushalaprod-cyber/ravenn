@@ -131,15 +131,24 @@ private:
     float viewTop = 0.f;
     bool inSilent = true, outSilent = true;
     juce::Image backdrop;
-    int dragX = -1;
-    bool overX (float x, int& which) const;
+    int dragKind = 0, dragIdx = -1;
+    float xOfF (float f) const;
+    float fOfX (float x) const;
+    float thrY (float t) const;
+    float rangeY (float r) const;
+    juce::Point<float> bandNode (int b) const;
+    juce::Point<float> dynNode (int f) const;
+    int hitTest (juce::Point<float> p, int& idx) const;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     juce::Rectangle<float> plotArea;
 public:
-    bool showBands = false;   // onglet MULTIBAND : coupures deplacables + reduction par bande
+    bool showBands = false;   // onglet MULTIBAND : edition directe sur le spectre
+    int selectedBand = -1;
 };
 
 // Vectorscope : image stereo (Lissajous M/S) + correlation
@@ -180,7 +189,7 @@ private:
     juce::TextButton resetBtn;
     float grDisp = 0.f, limDisp = 0.f, inDisp = -100.f, outDisp = -100.f, inHold = -100.f, outHold = -100.f;
     int inHoldT = 0, outHoldT = 0;
-    float lufsM = -100.f, lufsS = -100.f, lufsI = -100.f, lufsL = -100.f, tp = -100.f, agc = 0.f, clipEff = 0.f;
+    float lufsM = -100.f, lufsS = -100.f, lufsI = -100.f, lufsL = -100.f, tp = -100.f, agc = 0.f, clipEff = 0.f, plrDisp = 0.f;
 };
 
 class AutoMasterPanel : public juce::Component, private juce::Timer
@@ -225,6 +234,30 @@ private:
     std::array<juce::Rectangle<int>, 2> dynArea;
     juce::Rectangle<int> mbPanel, dynPanel;
     std::array<float, 4> grDisp {};
+public:
+    const int* selBand = nullptr;
+    int lastSel = -2;
+};
+
+//==============================================================================
+// Page des presets (s'ouvre / se ferme) : categories, recherche, tuiles
+class PresetBrowser : public juce::Component
+{
+public:
+    explicit PresetBrowser (RavennProcessor& p);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void refresh();
+    std::function<void()> onClose, onSave, onImport;
+
+private:
+    void rebuildTiles();
+    RavennProcessor& proc;
+    juce::TextEditor search;
+    juce::TextButton closeBtn { "FERMER" }, saveBtn { "SAVE" }, importBtn { "IMPORT" }, folderBtn { "DOSSIER" };
+    juce::OwnedArray<juce::TextButton> catBtns, tiles;
+    juce::String category { "TOUS" };
+    juce::Rectangle<int> panel, tileArea;
 };
 
 //==============================================================================
@@ -237,6 +270,8 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void setPage (int page);
+    void showPresetBrowser (bool show) { browser.refresh(); browser.setVisible (show); browser.toFront (false); }
+    void selectBand (int b) { spectrum.selectedBand = b; }
 
     // glisser-deposer d'un morceau de reference
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
@@ -275,7 +310,7 @@ private:
              fatten, fatColor, imgLow, imgMid, imgHigh, stabilize, voiceFocus,
              lowCut, highCut, clipKnee, spaceLow, depth3dFreq, dsFreq, dsThr, dsRange, specRes, specSpeed;
     Segmented maskBand, clipShape, clipBand, eqPos, os, dither;
-    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity, clipMS, dsListen, specCut;
+    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity, clipMS, dsListen, specCut, dsAuto;
     ChoiceBox limStyle, satStyle1, satStyle2, satStyle3, charType, specTarget;
     juce::OwnedArray<juce::TextButton> slotBtns;
 
@@ -292,6 +327,8 @@ private:
     MeterColumn meters;
     AutoMasterPanel autoMaster;
     MultibandPage mbPage;
+    PresetBrowser browser;
+    juce::TextButton presetNameBtn;
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;

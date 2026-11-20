@@ -78,6 +78,8 @@ public:
     // ---- A/B
     void switchAB();
     void selectSlot (int slot);
+    void copySlotTo (int dest);
+    bool slotHasState (int slot) const;
     void copyToOtherSlot();
     int getABSlot() const { return abSlot; }
 
@@ -154,7 +156,7 @@ private:
                            *dynFreq[2] {}, *dynQ[2] {}, *dynThr[2] {}, *dynRange[2] {},
                            *lowCut {}, *highCut {}, *clipKnee {}, *clipMS {}, *spaceLow {}, *depth3dFreq {},
                            *dsFreq {}, *dsThr {}, *dsRange {}, *dsListen {}, *specRes {}, *specSpeed {}, *specTarget {},
-                           *specCut {}, *mbAuto {};
+                           *specCut {}, *mbAuto {}, *dsAuto {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -236,6 +238,7 @@ private:
         double kSum = 0, peak = 0, activeSec = 0;
         std::array<double, 5> band {};
         std::array<double, nOct> oct {};
+        double lowPeak = 0, sibE = 0, sibMax = 0;
         double sideE = 0, midE = 0, lowSideE = 0, lowMidE = 0, lr = 0, ll = 0, rr = 0;
         long long n = 0;
     } amStats;
@@ -243,6 +246,7 @@ private:
     std::array<gdsp::Biquad, 2> amShelf, amHp, amOutShelf, amOutHp;
     std::array<gdsp::BandFilter, 5> amBands;
     std::array<gdsp::BandFilter, nOct> amOct, amOutOct;
+    gdsp::BandFilter amSib;
     std::array<double, nOct> amWinOutOct {};
     gdsp::LR4 amLowS, amLowM;
     bool amBlockActive = false;

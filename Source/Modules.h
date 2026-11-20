@@ -1071,7 +1071,7 @@ struct DynEQ
 struct DeEsser
 {
     std::array<LR4, 2> lp, hp;
-    double fs = 0, f = 0, env = 0, g = 1, aC = 0, rC = 0, gS = 0, lastGrDb = 0;
+    double fs = 0, f = 0, env = 0, g = 1, aC = 0, rC = 0, gS = 0, lastGrDb = 0, slow = 0, sC = 0;
 
     void prepare (double sampleRate)
     {
@@ -1079,9 +1079,10 @@ struct DeEsser
         aC = 1.0 - std::exp (-1.0 / (0.0007 * fs));
         rC = 1.0 - std::exp (-1.0 / (0.06 * fs));
         gS = 1.0 - std::exp (-1.0 / (0.0008 * fs));
+        sC = 1.0 - std::exp (-1.0 / (1.5 * fs));
         reset();
     }
-    void reset() noexcept { for (auto* a : { &lp, &hp }) for (auto& x : *a) x.reset(); env = 0; g = 1; }
+    void reset() noexcept { for (auto* a : { &lp, &hp }) for (auto& x : *a) x.reset(); env = 0; g = 1; slow = 0; }
     void setFreq (double freq) noexcept
     {
         if (freq == f) return;
@@ -1089,7 +1090,9 @@ struct DeEsser
         for (auto& x : lp) x.setLowpass (fs, f);
         for (auto& x : hp) x.setHighpass (fs, f);
     }
-    inline void process (double* x, int nch, double thrDb, double rangeDb, bool listen) noexcept
+    // autoMode : le seuil suit tout seul le niveau moyen des aigus (+4 dB) : seules
+    // les sifflantes qui depassent nettement leur niveau habituel sont reduites
+    inline void process (double* x, int nch, double thrDb, double rangeDb, bool listen, bool autoMode = false) noexcept
     {
         double lo[2] {}, hi[2] {}, det = 0;
         for (int c = 0; c < nch; ++c)
@@ -1099,7 +1102,9 @@ struct DeEsser
             det = std::max (det, std::abs (hi[c]));
         }
         env += (det > env ? aC : rC) * (det - env);
+        slow += sC * (det - slow);
         const double L = 20.0 * std::log10 (env + 1e-9);
+        if (autoMode) thrDb = 20.0 * std::log10 (slow + 1e-9) + 4.0;
         const double grDb = -std::min (rangeDb, std::max (0.0, (L - thrDb) * 0.75));
         g += gS * (std::pow (10.0, grDb / 20.0) - g);
         lastGrDb = grDb;

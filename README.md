@@ -36,6 +36,8 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **AAX** : option de compilation -DRAVENN_AAX=ON -DAAX_SDK_PATH=... (SDK Avid requis, signature PACE pour Pro Tools).
 
+**1.6** : multibande éditable directement sur le spectre (points de seuil, molette = ratio, double-clic = bypass, bandes dynamiques par double-clic), page des presets (catégories + recherche), auto de-esser, 10 courbes pour l'équilibreur, auto master qui règle tous les modules (annulable en une fois), copie A/B/C/D par menu, PLR.
+
 **RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
@@ -57,8 +59,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.5.1-windows-setup.exe`.
-- **macOS** : `ravenn-1.5.1-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.6.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.6.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

@@ -492,6 +492,32 @@ int main()
                      check (e1 < e0 * 0.5));
     }
 
+    // --- Auto de-esser : agit sans regler de seuil
+    {
+        RavennProcessor p;
+        setP (p, "dsAuto", 1); setP (p, "dsFreq", 4000);
+        run (p, 48000.0, 512, 0.6f, 3.0);
+        const float gr = p.dsGrAcc.load();
+        std::printf ("%-22s reduction %.1f dB  %s\n", "Auto de-esser", gr, check (gr < -1.f));
+    }
+
+    // --- Auto master : une seule etape d'undo ramene tous les reglages
+    {
+        RavennProcessor p;
+        setP (p, "fatten", 40); setP (p, "ott", 30);
+        p.getStateInformation (*std::make_unique<juce::MemoryBlock>());
+        p.undo.beginNewTransaction();
+        p.prepareToPlay (48000.0, 512);
+        p.startAutoMaster();
+        run (p, 48000.0, 512, 0.3f, 12.0, false, true);
+        const bool changed = p.apvts.getRawParameterValue ("fatten")->load() == 0.f;
+        // annuler tant qu'il le faut (auto master + ajustements fins du niveau)
+        for (int k = 0; k < 10 && p.apvts.getRawParameterValue ("fatten")->load() == 0.f && p.undo.canUndo(); ++k) p.undo.undo();
+        const bool restored = std::abs (p.apvts.getRawParameterValue ("fatten")->load() - 40.f) < 0.01f;
+        std::printf ("%-22s modules regles %s, annulable %s  %s\n", "Auto master + undo", changed ? "oui" : "NON", restored ? "oui" : "NON",
+                     check (changed && restored));
+    }
+
     // --- Slots A/B/C/D
     {
         RavennProcessor p;
@@ -594,9 +620,13 @@ int main()
         setP (p, "depth", 20); setP (p, "analog", 25); setP (p, "width", 120); setP (p, "tilt", 1.5f);
         run (p, 48000.0, 512, 0.8f, 6.0);
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        for (int pg = 0; pg < 7; ++pg)
+        for (int pg = 0; pg < 8; ++pg)
         {
-            if (auto* re = dynamic_cast<RavennEditor*> (ed.get())) re->setPage (pg);
+            if (auto* re = dynamic_cast<RavennEditor*> (ed.get()))
+            {
+                if (pg == 5) re->selectBand (1);
+                if (pg < 7) re->setPage (pg); else re->showPresetBrowser (true);
+            }
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
             juce::File out = juce::File::getSpecialLocation (juce::File::currentExecutableFile)
                                  .getSiblingFile (pg == 0 ? juce::String ("ui.png") : "ui" + juce::String (pg) + ".png");

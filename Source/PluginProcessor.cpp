@@ -22,8 +22,19 @@ namespace
     constexpr float amTargets[RavennProcessor::numTargets] = { 0.f, -4.f, -7.f, -9.f, -11.f, -14.f, -16.f, -23.f, -14.f };
     constexpr int refTargetIdx = 8;
 
-    // Courbe cible du Stabilizer sans reference : equilibre typique d'un master moderne
+    // Courbes cibles de l'equilibreur spectral (energie par octave, 31 Hz - 16 kHz)
     constexpr float defaultTilt[RavennProcessor::nOct] = { -6.f, -2.f, -1.f, -2.5f, -4.5f, -6.5f, -8.5f, -10.5f, -13.f, -18.f };
+    constexpr float targetCurves[10][RavennProcessor::nOct] = {
+        { -6.f, -2.f, -1.f, -2.5f, -4.5f, -6.5f, -8.5f, -10.5f, -13.f, -18.f },   // MODERN
+        {  0.f,  0.f,  0.f,  0.f,   0.f,   0.f,   0.f,   0.f,    0.f,   0.f  },   // PINK (non utilise)
+        {  0.f,  0.f,  0.f,  0.f,   0.f,   0.f,   0.f,   0.f,    0.f,   0.f  },   // REFERENCE (non utilise)
+        { -4.f, -0.5f, 0.f, -2.f,  -4.5f, -7.f,  -9.5f, -12.f, -15.5f, -21.f },   // WARM
+        { -7.f, -3.f, -2.f, -3.f,  -4.5f, -6.f,  -7.5f,  -9.f,  -11.f, -15.5f },  // BRIGHT
+        { -2.f,  0.f, -1.f, -4.f,  -6.5f, -8.f,  -9.f,  -10.5f, -13.f, -18.f },   // HIP-HOP / TRAP
+        { -3.f,  0.f, -1.5f, -4.f, -6.f,  -7.f,  -8.f,  -9.f,   -11.f, -16.f },   // EDM / CLUB
+        { -9.f, -4.f, -2.f, -2.f,  -3.5f, -5.f,  -6.5f, -9.f,   -12.f, -17.f },   // ROCK
+        { -12.f, -6.f, -3.f, -3.f, -4.f,  -5.5f, -7.5f, -10.f,  -13.f, -18.f },   // ACOUSTIC
+        { -9.f, -4.f, -2.5f, -3.f, -4.f,  -5.f,  -6.f,  -8.5f,  -12.f, -17.f } }; // VOCAL
 
     // Constantes calees par mesure de MONSTER (banc Tools/Probe.cpp), ajustement
     // numerique sur 4 niveaux : -30 / -24 / -18 / -12 dBFS
@@ -197,7 +208,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     toggle ("dsListen", "De-esser Listen", false);
     pct ("specRes",   "Resonance Tame", 100.f, 0.f);
     pct ("specSpeed", "Spectral Speed", 100.f, 50.f);
-    choice ("specTarget", "Spectral Target", { "MODERN", "PINK", "REFERENCE" }, 0);
+    choice ("specTarget", "Spectral Target", { "MODERN", "PINK", "REFERENCE", "WARM", "BRIGHT", "HIP-HOP / TRAP",
+                                               "EDM / CLUB", "ROCK", "ACOUSTIC", "VOCAL" }, 0);
+    toggle ("dsAuto", "Auto De-esser", false);
     toggle ("specCut", "Spectral Cut Only", false);
     toggle ("mbAuto", "MB Auto Gain", false);
 
@@ -314,7 +327,7 @@ RavennProcessor::RavennProcessor()
     p.spaceLow = get ("spaceLow"); p.depth3dFreq = get ("depth3dFreq");
     p.dsFreq = get ("dsFreq"); p.dsThr = get ("dsThr"); p.dsRange = get ("dsRange"); p.dsListen = get ("dsListen");
     p.specRes = get ("specRes"); p.specSpeed = get ("specSpeed"); p.specTarget = get ("specTarget"); p.specCut = get ("specCut");
-    p.mbAuto = get ("mbAuto");
+    p.mbAuto = get ("mbAuto"); p.dsAuto = get ("dsAuto");
     for (int i = 0; i < 512; ++i) { limViewIn[(size_t) i].store (0.f); limViewGr[(size_t) i].store (0.f); }
     for (int k = 0; k < 2; ++k)
     {
@@ -389,6 +402,7 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (int b = 0; b < 5; ++b) amBands[(size_t) b].set (sampleRate, bLo[b], bHi[b]);
     for (int b = 0; b < nOct; ++b) setOctaveFilter (amOct[(size_t) b], sampleRate, b);
     amLowS.setLowpass (sampleRate, 150.0);
+    amSib.set (sampleRate, 4500.0, 10000.0);
     amLowM.setLowpass (sampleRate, 150.0);
 
     scopeSlice = juce::jmax (1, (int) std::lround (sampleRate * 0.01));
@@ -742,10 +756,11 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     // (moteur spectral STFT : BALANCE = "stabilize", RESONANCE = "specRes")
     if (currentSpec)
     {
-        const int tsel = juce::jlimit (0, 2, (int) p.specTarget->load());
+        const int tsel = juce::jlimit (0, 9, (int) p.specTarget->load());
         float oct[nOct];
         const bool useRef = tsel == 2 && refValid.load();
-        for (int b = 0; b < nOct; ++b) oct[b] = useRef ? refOct[(size_t) b].load() : defaultTilt[b];
+        const int curve = (tsel == 1 || tsel == 2) ? 0 : tsel;
+        for (int b = 0; b < nOct; ++b) oct[b] = useRef ? refOct[(size_t) b].load() : targetCurves[curve][b];
         // densite par Hz (dB) en fonction de log2(f) : energie d'octave - 10 log10(f)
         auto target = [&] (double lf) -> double
         {
@@ -823,15 +838,16 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     rOtt.finish(); rPunch.finish(); rSpace.finish();
 
     // ---------- 5a. DE-ESSER
-    if (p.dsRange->load() > 0.f)
+    const bool dsAuto = p.dsAuto->load() > 0.5f;
+    if (p.dsRange->load() > 0.f || dsAuto)
     {
-        const double thr = p.dsThr->load(), rng = p.dsRange->load();
+        const double thr = p.dsThr->load(), rng = p.dsRange->load() > 0.f ? (double) p.dsRange->load() : 6.0;
         const bool listen = p.dsListen->load() > 0.5f;
         double grm = 0;
         for (int i = 0; i < n; ++i)
         {
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
-            deEsser.process (x, nch, thr, rng, listen);
+            deEsser.process (x, nch, thr, rng, listen, dsAuto);
             grm = juce::jmin (grm, deEsser.lastGrDb);
             for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
         }
@@ -1314,7 +1330,7 @@ void RavennProcessor::analyzeInput (float* const* ch, int nch, int n)
         for (auto& f : amHp) f.reset();
         for (auto& f : amBands) f.reset();
         for (auto& f : amOct) f.reset();
-        amLowS.reset(); amLowM.reset();
+        amLowS.reset(); amLowM.reset(); amSib.reset();
     }
     if (amResetWindow.exchange (false))
     {
@@ -1358,6 +1374,7 @@ void RavennProcessor::analyzeInput (float* const* ch, int nch, int n)
                 octE[b] = v * v;
             }
         const double ls = amLowS.process (S), lm = amLowM.process (M);
+        const double sb = amSib.process (M);
 
         if (! amBlockActive) continue;
 
@@ -1371,6 +1388,8 @@ void RavennProcessor::analyzeInput (float* const* ch, int nch, int n)
             for (int b = 0; b < nOct; ++b) st.oct[(size_t) b] += octE[b];
             st.sideE += S * S;  st.midE += M * M;
             st.lowSideE += ls * ls;  st.lowMidE += lm * lm;
+            st.lowPeak = std::max (st.lowPeak, std::abs (lm));
+            st.sibE += sb * sb; st.sibMax = std::max (st.sibMax, std::abs (sb));
             st.lr += L * R;  st.ll += L * L;  st.rr += R * R;
         }
         else
@@ -1453,6 +1472,7 @@ void RavennProcessor::applyAutoMaster()
     const auto r = getRefInfo();
     const bool useRef = idx == refTargetIdx && r.valid;
 
+    // ===== 1. Mesures
     amInLufs = (float) toLufs (st.kSum / nS);
     const double peakDb = 20.0 * std::log10 (std::max (st.peak, 1e-9));
     const double plr = peakDb - amInLufs;
@@ -1460,102 +1480,166 @@ void RavennProcessor::applyAutoMaster()
     static constexpr double refDb[5] = { 0.0, -3.0, -5.0, -14.0, -24.0 };
     double sumE = 1e-20, sumR = 0;
     for (int b = 0; b < 5; ++b) { sumE += st.band[(size_t) b]; sumR += std::pow (10.0, refDb[b] / 10.0); }
-    double dev[5];
+    double dev[5], devRms = 0;
     for (int b = 0; b < 5; ++b)
+    {
         dev[b] = 10.0 * std::log10 (std::max (st.band[(size_t) b], 1e-20) / sumE)
                - 10.0 * std::log10 (std::pow (10.0, refDb[b] / 10.0) / sumR);
+        devRms += dev[b] * dev[b];
+    }
+    devRms = std::sqrt (devRms / 5.0);
+
+    double octTot = 1e-20;
+    for (auto v : st.oct) octTot += v;
+    auto octRel = [&] (int b) { return 10.0 * std::log10 (std::max (st.oct[(size_t) b], 1e-20) / octTot); };
+    double tgtTot = 0;
+    for (auto v : defaultTilt) tgtTot += std::pow (10.0, v / 10.0);
+    auto tgtRel = [&] (int b) { return (double) defaultTilt[b] - 10.0 * std::log10 (tgtTot); };
 
     const double corr = st.lr / std::sqrt (std::max (st.ll * st.rr, 1e-20));
     const double lowSideRatio = st.lowSideE / std::max (st.lowMidE, 1e-20);
     const double inSideRatio = st.sideE / std::max (st.midE, 1e-20);
+    const double lowRms = std::sqrt (st.lowMidE / nS);
+    const double lowCrest = 20.0 * std::log10 (std::max (st.lowPeak, 1e-9) / std::max (lowRms, 1e-9));
+    const double sibRms = std::sqrt (st.sibE / nS);
+    const double sibCrest = 20.0 * std::log10 (std::max (st.sibMax, 1e-9) / std::max (sibRms, 1e-9));
+    const double sibShare = 10.0 * std::log10 ((st.oct[7] + st.oct[8] + 1e-20) / octTot)
+                          - 10.0 * std::log10 ((std::pow (10.0, tgtRel (7) / 10.0) + std::pow (10.0, tgtRel (8) / 10.0)));
+    const double subExcess = octRel (0) - tgtRel (0);
+    const bool loud = amTargetLufs >= -9.f, streaming = amTargetLufs <= -13.f;
 
+    // ===== 2. Decisions (chaque module est regle explicitement)
+    std::vector<std::pair<juce::String, float>> v;
+    juce::StringArray notes;
+    auto set = [&] (const char* id, float value) { v.push_back ({ id, value }); };
+
+    // couleur
     float lowShelf = (float) juce::jlimit (-3.0, 3.0, -0.5 * dev[0]);
     float air      = (float) juce::jlimit (0.0, 4.0, -0.5 * dev[4]);
     float tilt     = (float) juce::jlimit (-3.0, 3.0, -0.3 * (dev[3] - dev[1]));
-
     const float depth = dev[0] < -2.0 ? (float) juce::jlimit (0.0, 40.0, (-dev[0] - 2.0) * 8.0) : 0.f;
     const float mouth = (float) juce::jlimit (5.0, 30.0, 10.0 + (plr - 10.0) * 2.0);
     float mask = 5.f;  int maskBand = 2;
     if (corr > 0.85)      { mask = 30.f; maskBand = 1; }
     else if (corr > 0.5)  { mask = 15.f; maskBand = 1; }
 
+    // stereo
     float width = 100.f;
     if (corr > 0.9)       width = 115.f;
     else if (corr < 0.0)  width = 80.f;
     else if (corr < 0.3)  width = 90.f;
     const bool monoBass = lowSideRatio > 0.05;
+    const float d3 = corr > 0.95 ? 20.f : 0.f;
+    if (d3 > 0) notes.add ("3D");
+    if (monoBass) notes.add ("mono bass");
 
-    // --- Reference : EQ de correspondance par octave + largeur
+    // reference : EQ match par octave + largeur
     if (useRef)
     {
-        double inTot = 1e-20;
-        for (auto v : st.oct) inTot += v;
         double diff[nOct];
         for (int b = 0; b < nOct; ++b)
-            diff[b] = (double) r.oct[(size_t) b] - 10.0 * std::log10 (std::max (st.oct[(size_t) b], 1e-20) / inTot);
+            diff[b] = (double) r.oct[(size_t) b] - octRel (b);
         for (int b = 0; b < nOct; ++b)
         {
-            const double prev = diff[juce::jmax (0, b - 1)], next = diff[juce::jmin (nOct - 1, b + 1)];
-            const double sm = 0.25 * prev + 0.5 * diff[b] + 0.25 * next;
+            const double sm = 0.25 * diff[juce::jmax (0, b - 1)] + 0.5 * diff[b] + 0.25 * diff[juce::jmin (nOct - 1, b + 1)];
             const double lim = (b == 0 || b == nOct - 1) ? 4.0 : 6.0;
             matchGains[(size_t) b].store ((float) juce::jlimit (-lim, lim, 0.8 * sm));
         }
         lowShelf = air = tilt = 0.f;
         width = (float) juce::jlimit (70.0, 140.0, 100.0 * std::sqrt (std::max (r.sideRatio, 1e-6f) / std::max (inSideRatio, 1e-6)));
+        notes.add (juce::String::fromUTF8 ("EQ calé sur ") + r.name);
     }
 
-    const float punch = plr < 8.0 ? 25.f : (plr < 11.0 ? 12.f : 0.f);
-    const bool streaming = amTargetLufs <= -13.f;
+    // equilibre spectral, resonances, sub, air
+    const float balance = useRef ? 0.f : (float) juce::jlimit (0.0, 45.0, (devRms - 1.5) * 10.0);
+    if (balance > 0) notes.add ("balance " + juce::String ((int) balance) + " %");
+    const float resonance = loud ? 12.f : 0.f;
+    const float lowCutHz = subExcess > 4.0 ? 28.f : 10.f;
+    if (lowCutHz > 10.5f) notes.add ("low cut 28 Hz");
+    const float highAir = dev[4] < -4.0 ? (float) juce::jlimit (0.0, 35.0, (-dev[4] - 4.0) * 8.0) : 0.f;
+    if (highAir > 0) notes.add ("air");
 
+    // sifflantes : de-esser automatique si les aigus sont a la fois forts et pointus
+    const bool deEss = sibCrest > 17.0 && sibShare > 1.0;
+    if (deEss) notes.add ("auto de-esser");
+
+    // dynamique : multibande si le grave est tres irregulier, ou pour coller a une reference plus compacte
+    bool mbOn = false;
+    float mbThr[4] = { 0.f, 0.f, 0.f, 0.f }, mbRatio[4] = { 1.5f, 1.5f, 1.5f, 1.5f };
+    if (lowCrest > 15.0)
+    {
+        mbOn = true;
+        mbThr[0] = (float) juce::jlimit (-40.0, -6.0, 20.0 * std::log10 (std::max (lowRms, 1e-6)) + 6.0);
+        mbRatio[0] = 2.5f;
+        notes.add ("multibande (grave)");
+    }
+    if (useRef && (r.peakDb - r.lufs) < plr - 3.0)
+    {
+        mbOn = true;
+        for (int b = 0; b < 4; ++b) { mbThr[b] = std::min (mbThr[b], -24.f); mbRatio[b] = std::max (mbRatio[b], 2.f); }
+        notes.add (juce::String::fromUTF8 ("dynamique calée sur la réf"));
+    }
+    const float punch = plr < 8.0 ? 25.f : (plr < 11.0 ? 12.f : 0.f);
+
+    // limiteur : style et plafond selon la cible
+    int limStyle = 0;
+    if (amTargetLufs >= -4.f)       limStyle = 4;      // AGGRESSIVE
+    else if (amTargetLufs >= -9.f)  limStyle = 5;      // MODERN
+    if (useRef && (r.peakDb - r.lufs) < 8.f) limStyle = 5;
+
+    // gain : cible LUFS, le reste a l'ajustement fin
     const double G = amTargetLufs - amInLufs + 0.5;
     float in = (float) juce::jlimit (-15.0, 15.0, G * 0.35);
     float clip = (float) juce::jlimit (-15.0, 15.0, G - in);
     const double rest = G - in - clip;
     if (std::abs (rest) > 0.05) in = (float) juce::jlimit (-15.0, 15.0, in + rest);
 
-    setParamValue ("bypass", 0.f);
-    setParamValue ("body", 1.f);
-    setParamValue ("ott", 0.f);
-    setParamValue ("fatten", 0.f);
-    setParamValue ("stabilize", useRef ? 0.f : 20.f);
-    for (auto* id : { "imgLow", "imgMid", "imgHigh" }) setParamValue (id, 100.f);
-    setParamValue ("punch", punch);
-    setParamValue ("link", 0.f);
-    setParamValue ("delta", 0.f);
-    setParamValue ("autoGain", 0.f);
-    setParamValue ("mix", 100.f);
-    setParamValue ("out", 0.f);
-    setParamValue ("eqPos", 0.f);
-    setParamValue ("clipShape", 1.f);
-    setParamValue ("clipBand", 0.f);
-    if (p.noLatency->load() < 0.5f) setParamValue ("os", 2.f);
-    setParamValue ("lowShelf", lowShelf);
-    setParamValue ("air", air);
-    setParamValue ("tilt", tilt);
-    setParamValue ("depth", depth);
-    setParamValue ("mouth", mouth);
-    setParamValue ("mask", mask);
-    setParamValue ("maskBand", (float) maskBand);
-    setParamValue ("analog", 15.f);
-    setParamValue ("width", width);
-    setParamValue ("monoBass", monoBass ? 1.f : 0.f);
-    setParamValue ("monoFreq", 120.f);
-    setParamValue ("refMatch", useRef ? 100.f : 0.f);
-    // Limiteur : plafond -1 dBTP pour le streaming / la TV, -0,3 dB pour le club
-    setParamValue ("limOn", 1.f);
-    setParamValue ("limGain", 0.f);
-    setParamValue ("limTP", 1.f);
-    setParamValue ("limUnity", 0.f);
-    setParamValue ("limCeil", streaming ? -1.f : -0.3f);
-    setParamValue ("in", in);
-    setParamValue ("clip", clip);
+    // ===== 3. Application : tous les parametres, en UNE etape d'undo
+    // (on repart des valeurs par defaut, sauf les choix de travail de l'utilisateur)
+    static const juce::StringArray keep { "amTarget", "noLatency", "os", "dither", "bypass" };
+    undo.beginNewTransaction ("Auto master");
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+            if (! keep.contains (rp->getParameterID()))
+                set (rp->getParameterID().toRawUTF8(), rp->convertFrom0to1 (rp->getDefaultValue()));
+
+    set ("body", 1.f); set ("punch", punch);
+    set ("lowShelf", lowShelf); set ("air", air); set ("tilt", tilt);
+    set ("depth", depth); set ("mouth", mouth); set ("mask", mask); set ("maskBand", (float) maskBand); set ("analog", 15.f);
+    set ("width", width); set ("monoBass", monoBass ? 1.f : 0.f); set ("monoFreq", 120.f);
+    set ("depth3d", d3); set ("depth3dFreq", 1500.f);
+    set ("refMatch", useRef ? 100.f : 0.f);
+    set ("stabilize", balance); set ("specTarget", 0.f); set ("specRes", resonance);
+    set ("lowCut", lowCutHz); set ("airHigh", highAir);
+    set ("dsAuto", deEss ? 1.f : 0.f); set ("dsRange", deEss ? 5.f : 0.f); set ("dsFreq", 6500.f);
+    set ("mbOn", mbOn ? 1.f : 0.f); set ("mbAuto", 1.f);
+    for (int b = 0; b < 4; ++b)
+    {
+        const juce::String n (b + 1);
+        v.push_back ({ "mbThr" + n, mbThr[b] }); v.push_back ({ "mbRatio" + n, mbRatio[b] });
+    }
+    set ("clipShape", 1.f); set ("clipKnee", loud ? 30.f : 45.f);
+    if (p.noLatency->load() < 0.5f) set ("os", 2.f);
+    set ("limOn", 1.f); set ("limStyle", (float) limStyle); set ("limTP", 1.f);
+    set ("limCeil", streaming ? -1.f : -0.3f);
+    set ("in", in); set ("clip", clip);
+
+    for (auto& [id, val] : v)
+    {
+        if (auto* rp = apvts.getParameter (id))
+        {
+            auto child = apvts.state.getChildWithProperty ("id", id);
+            const float vv = rp->convertFrom0to1 (rp->convertTo0to1 (val));
+            if (child.isValid()) child.setProperty ("value", vv, &undo);
+            else setParamValue (id, val);
+        }
+    }
+    undo.beginNewTransaction();
 
     amReport = juce::String::fromUTF8 ("Entrée ") + juce::String (amInLufs, 1) + " LUFS"
-             + juce::String::fromUTF8 (" · corrélation ") + juce::String (corr, 2)
-             + (monoBass ? juce::String::fromUTF8 (" · mono bass") : juce::String())
-             + (useRef ? juce::String::fromUTF8 (" · EQ calé sur ") + r.name : juce::String());
+             + juce::String::fromUTF8 (" · PLR ") + juce::String (plr, 1) + " dB"
+             + (notes.isEmpty() ? juce::String() : juce::String::fromUTF8 (" · ") + notes.joinIntoString (juce::String::fromUTF8 (" · ")));
 }
-
 void RavennProcessor::refineAutoMaster()
 {
     const double nS = juce::jmax (1.0, amWinSec * baseRate);
@@ -1657,6 +1741,17 @@ void RavennProcessor::resetAllParameters()
 
 //==============================================================================
 void RavennProcessor::switchAB() { selectSlot ((abSlot + 1) % 4); }
+
+void RavennProcessor::copySlotTo (int dest)
+{
+    if (dest < 0 || dest > 3 || dest == abSlot) return;
+    abState[(size_t) dest] = apvts.copyState();
+}
+
+bool RavennProcessor::slotHasState (int slot) const
+{
+    return slot == abSlot || (slot >= 0 && slot < 4 && abState[(size_t) slot].isValid());
+}
 
 void RavennProcessor::selectSlot (int slot)
 {
