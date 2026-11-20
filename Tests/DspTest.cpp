@@ -71,6 +71,8 @@ static float diffDb (const std::vector<float>& a, const std::vector<float>& b)
 
 int main()
 {
+    std::setvbuf (stdout, nullptr, _IONBF, 0);   // sortie immediate : en CI on voit ou ca s'arrete
+    std::printf ("ravenn tests\n");
     juce::ScopedJuceInitialiser_GUI init;
     int failures = 0;
     auto check = [&] (bool ok) { if (! ok) ++failures; return ok ? "OK" : "ECHEC"; };
