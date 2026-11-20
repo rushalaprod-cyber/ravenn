@@ -1,5 +1,8 @@
 #include "PluginEditor.h"
 #include <BinaryData.h>
+#ifndef JucePlugin_VersionString
+ #define JucePlugin_VersionString "dev"
+#endif
 
 using ui::tr;
 
@@ -373,13 +376,10 @@ void Segmented::resized()
     auto r = getLocalBounds();
     const int n = buttons.size();
     if (n == 0) return;
-    const int gap = 1;
-    const int w = (r.getWidth() - gap * (n - 1)) / n;
-    for (auto* b : buttons)
-    {
-        b->setBounds (r.removeFromLeft (w));
-        r.removeFromLeft (gap);
-    }
+    const int cols = columns > 0 ? columns : n, rows = (n + cols - 1) / cols, gap = 1;
+    const int w = (r.getWidth() - gap * (cols - 1)) / cols, h = (r.getHeight() - gap * (rows - 1)) / rows;
+    for (int i = 0; i < n; ++i)
+        buttons[i]->setBounds (r.getX() + (i % cols) * (w + gap), r.getY() + (i / cols) * (h + gap), w, h);
 }
 
 Pill::Pill (juce::AudioProcessorValueTreeState& s, const juce::String& id, const juce::String& text,
@@ -573,7 +573,7 @@ void Spectrum::timerCallback()
 void Spectrum::paint (juce::Graphics& g)
 {
     using namespace juce;
-    const float s = (float) getWidth() / 976.f;
+    const float s = (float) getWidth() / 770.f;
     auto r = getLocalBounds().toFloat();
     drawPanelFrame (g, r, ui::cyan, s);
     drawPanelTitle (g, r, "SPECTRUM", ui::cyan, s);
@@ -581,6 +581,7 @@ void Spectrum::paint (juce::Graphics& g)
     auto plotAll = r.reduced (14.f * s).withTrimmedTop (22.f * s).withTrimmedBottom (12.f * s);
     auto scaleArea = plotAll.removeFromRight (40.f * s);
     auto plot = plotAll;
+    plotArea = plot;
     const double fs = proc.getSampleRate() > 0 ? proc.getSampleRate() : 48000.0;
     constexpr float fMin = 20.f, fMax = 20000.f, range = 84.f;
     const float top = std::round (viewTop / 6.f) * 6.f, bot = top - range;
@@ -637,6 +638,29 @@ void Spectrum::paint (juce::Graphics& g)
     };
 
     const bool deltaOn = proc.apvts.getRawParameterValue ("delta")->load() > 0.5f;
+    // Onglet MULTIBAND : les 4 bandes sur le spectre, coupures deplacables,
+    // reduction de gain de chaque bande en voile depuis le haut
+    if (showBands)
+    {
+        const bool on = proc.apvts.getRawParameterValue ("mbOn")->load() > 0.5f;
+        float xs[5] = { plot.getX(), 0, 0, 0, plot.getRight() };
+        for (int k = 0; k < 3; ++k)
+            xs[k + 1] = xOf (proc.apvts.getRawParameterValue ("mbX" + String (k + 1))->load());
+        for (int b = 0; b < 4; ++b)
+        {
+            const float gr = on ? jlimit (0.f, 24.f, -proc.mbGrAcc[(size_t) b].load()) : 0.f;
+            auto band = Rectangle<float> (xs[b], plot.getY(), xs[b + 1] - xs[b], plot.getHeight() * gr / 24.f);
+            g.setGradientFill (ColourGradient (ui::red.withAlpha (0.35f), 0, band.getY(), ui::red.withAlpha (0.05f), 0, band.getBottom() + 1.f, false));
+            g.fillRect (band);
+        }
+        for (int k = 1; k <= 3; ++k)
+        {
+            const bool hot = dragX == k;
+            g.setColour ((hot ? ui::cyan : ui::amber).withAlpha (0.85f));
+            g.drawVerticalLine ((int) xs[k], plot.getY(), plot.getBottom());
+            g.fillEllipse (xs[k] - 5.f * s, plot.getY() + 4.f * s, 10.f * s, 10.f * s);
+        }
+    }
     // Silence : rien a afficher (on ne dessine pas de courbe "plancher")
     if (outSilent && inSilent)
     {
@@ -701,6 +725,162 @@ void Spectrum::paint (juce::Graphics& g)
     }
 }
 
+bool Spectrum::overX (float x, int& which) const
+{
+    if (! showBands || plotArea.isEmpty()) return false;
+    for (int k = 1; k <= 3; ++k)
+    {
+        const float f = proc.apvts.getRawParameterValue ("mbX" + juce::String (k))->load();
+        const float xx = plotArea.getX() + plotArea.getWidth() * std::log (f / 20.f) / std::log (1000.f);
+        if (std::abs (x - xx) < 7.f) { which = k; return true; }
+    }
+    return false;
+}
+
+void Spectrum::mouseMove (const juce::MouseEvent& e)
+{
+    int w = 0;
+    setMouseCursor (overX ((float) e.x, w) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+}
+
+void Spectrum::mouseDown (const juce::MouseEvent& e)
+{
+    int w = 0;
+    dragX = overX ((float) e.x, w) ? w : -1;
+    if (dragX > 0)
+        if (auto* prm = proc.apvts.getParameter ("mbX" + juce::String (dragX))) prm->beginChangeGesture();
+}
+
+void Spectrum::mouseDrag (const juce::MouseEvent& e)
+{
+    if (dragX <= 0) return;
+    const float t = juce::jlimit (0.f, 1.f, ((float) e.x - plotArea.getX()) / plotArea.getWidth());
+    const float f = 20.f * std::pow (1000.f, t);
+    if (auto* prm = proc.apvts.getParameter ("mbX" + juce::String (dragX)))
+        prm->setValueNotifyingHost (prm->convertTo0to1 (f));
+}
+
+void Spectrum::mouseUp (const juce::MouseEvent&)
+{
+    if (dragX > 0)
+        if (auto* prm = proc.apvts.getParameter ("mbX" + juce::String (dragX))) prm->endChangeGesture();
+    dragX = -1;
+}
+
+//==============================================================================
+void StereoView::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    const float s = (float) getWidth() / 196.f;
+    auto r = getLocalBounds().toFloat();
+    drawPanelFrame (g, r, ui::violet, s);
+    drawPanelTitle (g, r, "STEREO", ui::violet, s);
+
+    auto a = r.reduced (12.f * s).withTrimmedTop (22.f * s);
+    auto corrBar = a.removeFromBottom (14.f * s);
+    a.removeFromBottom (6.f * s);
+    const float side = jmin (a.getWidth(), a.getHeight());
+    auto sq = Rectangle<float> (side, side).withCentre (a.getCentre());
+    const auto c = sq.getCentre();
+    const float rad = side * 0.5f;
+
+    // grille : demi-disque, axes M (vertical) et L / R (diagonales)
+    g.setColour (ui::edge.withAlpha (0.7f));
+    g.drawEllipse (sq.reduced (1.f), 1.f);
+    g.drawVerticalLine ((int) c.x, sq.getY(), sq.getBottom());
+    g.drawLine (c.x - rad * 0.707f, c.y - rad * 0.707f, c.x + rad * 0.707f, c.y + rad * 0.707f, 0.6f);
+    g.drawLine (c.x + rad * 0.707f, c.y - rad * 0.707f, c.x - rad * 0.707f, c.y + rad * 0.707f, 0.6f);
+    g.setColour (ui::dim);
+    g.setFont (ui::font (8.f * s, true));
+    g.drawText ("L", Rectangle<float> (sq.getX(), sq.getY(), 14.f * s, 12.f * s), Justification::centred);
+    g.drawText ("R", Rectangle<float> (sq.getRight() - 14.f * s, sq.getY(), 14.f * s, 12.f * s), Justification::centred);
+
+    // nuage de points (derniers 2048 echantillons), niveau normalise
+    const int w0 = proc.specWrite.load (std::memory_order_acquire);
+    constexpr int N = 2048, R = 8192;
+    float pk = 1e-6f;
+    for (int i = 0; i < N; ++i)
+    {
+        const int idx = (w0 - N + i + R) & (R - 1);
+        pk = jmax (pk, std::abs (proc.stereoL[(size_t) idx]), std::abs (proc.stereoR[(size_t) idx]));
+    }
+    const float norm = rad * 0.92f / pk;
+    double lr = 0, ll = 0, rr = 0, mm = 0, ss = 0;
+    g.setColour (ui::cyan.withAlpha (0.35f));
+    for (int i = 0; i < N; ++i)
+    {
+        const int idx = (w0 - N + i + R) & (R - 1);
+        const float L = proc.stereoL[(size_t) idx], Rr = proc.stereoR[(size_t) idx];
+        lr += L * Rr; ll += L * L; rr += Rr * Rr;
+        const float M = (L + Rr) * 0.707f, S = (L - Rr) * 0.707f;
+        mm += M * M; ss += S * S;
+        if ((i & 1) == 0) g.fillRect (c.x - S * norm, c.y - M * norm, 1.4f, 1.4f);
+    }
+    const float corr = (ll > 1e-12 && rr > 1e-12) ? (float) (lr / std::sqrt (ll * rr)) : 1.f;
+    corrDisp += 0.2f * (corr - corrDisp);
+    widthDisp += 0.2f * ((float) (mm > 1e-12 ? 10.0 * std::log10 ((ss + 1e-12) / mm) : -60.0) - widthDisp);
+
+    // correlation : -1 (opposition de phase) a +1 (mono)
+    g.setColour (ui::track);
+    g.fillRect (corrBar);
+    const float cx = corrBar.getCentreX(), xv = corrBar.getX() + corrBar.getWidth() * (corrDisp + 1.f) * 0.5f;
+    g.setColour (corrDisp < 0.f ? ui::red : ui::cyan);
+    g.fillRect (Rectangle<float> (jmin (cx, xv), corrBar.getY(), std::abs (xv - cx), corrBar.getHeight()));
+    g.setColour (ui::text);
+    g.setFont (ui::font (8.5f * s, true));
+    g.drawText ("CORR " + String (corrDisp, 2), corrBar, Justification::centredLeft);
+    g.drawText ("S/M " + String (widthDisp, 1) + " dB", corrBar, Justification::centredRight);
+}
+
+//==============================================================================
+void LimiterView::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colours::black.withAlpha (0.55f));
+    g.fillRect (r);
+    g.setColour (ui::edge);
+    g.drawRect (r, 1.f);
+    auto plot = r.reduced (4.f);
+    const float ceilDb = proc.apvts.getRawParameterValue ("limCeil")->load();
+    constexpr float range = 24.f;   // de 0 dB (haut) a -24 dB
+    auto yOf = [&] (float db) { return plot.getY() + plot.getHeight() * jlimit (0.f, 1.f, -db / range); };
+
+    constexpr int N = 512;
+    const int w0 = proc.limViewWrite.load (std::memory_order_acquire);
+    const float dx = plot.getWidth() / (float) (N - 1);
+    Path in, gr;
+    in.startNewSubPath (plot.getX(), plot.getBottom());
+    gr.startNewSubPath (plot.getX(), plot.getY());
+    for (int i = 0; i < N; ++i)
+    {
+        const int idx = (w0 + i) % N;
+        const float pk = proc.limViewIn[(size_t) idx].load (std::memory_order_relaxed);
+        const float pkDb = pk > 1e-6f ? Decibels::gainToDecibels (pk) : -100.f;
+        const float x = plot.getX() + (float) i * dx;
+        in.lineTo (x, yOf (jmin (0.f, pkDb)));
+        gr.lineTo (x, yOf (proc.limViewGr[(size_t) idx].load (std::memory_order_relaxed)));
+    }
+    in.lineTo (plot.getRight(), plot.getBottom()); in.closeSubPath();
+    gr.lineTo (plot.getRight(), plot.getY()); gr.closeSubPath();
+
+    g.setGradientFill (ColourGradient (ui::blue.withAlpha (0.7f), 0, plot.getY(), ui::blue.withAlpha (0.1f), 0, plot.getBottom(), false));
+    g.fillPath (in);
+    g.setColour (ui::red.withAlpha (0.8f));
+    g.fillPath (gr);
+    // plafond
+    g.setColour (ui::cyan);
+    const float yc = yOf (ceilDb);
+    g.drawHorizontalLine ((int) yc, plot.getX(), plot.getRight());
+    g.setFont (ui::font (9.f, true));
+    g.drawText ("CEILING " + String (ceilDb, 1), Rectangle<float> (plot.getRight() - 90.f, yc + 1.f, 88.f, 12.f), Justification::centredRight);
+    g.setColour (ui::dim);
+    for (float db : { -6.f, -12.f, -18.f })
+        g.drawText (String ((int) db), Rectangle<float> (plot.getX() + 2.f, yOf (db) - 6.f, 30.f, 12.f), Justification::centredLeft);
+    g.setColour (ui::text.withAlpha (0.8f));
+    g.drawText ("ENTREE + REDUCTION", plot.removeFromTop (12.f), Justification::centredLeft);
+}
+
 //==============================================================================
 MeterColumn::MeterColumn (RavennProcessor& p) : proc (p)
 {
@@ -729,6 +909,7 @@ void MeterColumn::timerCallback()
     lufsM = proc.loudness.momentary.load();
     lufsS = proc.loudness.shortTerm.load();
     lufsI = proc.loudness.integrated.load();
+    lufsL = proc.longTermLufs.load();
     tp = proc.truePeakDb.load();
     agc = proc.autoGainDb.load();
     clipEff = proc.effectiveClipDb.load();
@@ -781,10 +962,11 @@ void MeterColumn::paint (juce::Graphics& g)
     line (6);
     row ("MOMENTARY", fmt (lufsM), ui::text);
     row ("INTEGRATED", fmt (lufsI), ui::text);
+    row ("LONG TERM 30 s", fmt (lufsL), ui::text);
     row ("TRUE PEAK", fmt (tp) + " dBTP", tp > -1.f ? ui::red : ui::text);
     line (8);
 
-    auto bars = line (150);
+    auto bars = line (131);
     const int bw = roundToInt (22 * s);
     const int gap = (bars.getWidth() - 4 * bw) / 5;
     const int labelH = roundToInt (14 * s);
@@ -973,6 +1155,8 @@ MultibandPage::MultibandPage (RavennProcessor& p) : proc (p)
     }
     onPill = pills.add (new Pill (p.apvts, "mbOn", "MULTIBAND ON", ui::cyan, tr ("Active le compresseur multibande.")));
     addAndMakeVisible (onPill);
+    autoPill = pills.add (new Pill (p.apvts, "mbAuto", "AUTO GAIN", ui::green, tr ("Garde le même volume en sortie du multibande qu'à son entrée : tu juges la compression, pas le volume.")));
+    addAndMakeVisible (autoPill);
     startTimerHz (30);
 }
 
@@ -1021,7 +1205,12 @@ void MultibandPage::resized()
         rel[(size_t) k]->setBounds (r2);
     }
     const int bw = bottom.getWidth() / 6;
-    onPill->setBounds (bottom.removeFromLeft (bw).withSizeKeepingCentre (bw - px (8), px (30)));
+    {
+        auto col = bottom.removeFromLeft (bw).withSizeKeepingCentre (bw - px (8), px (66));
+        onPill->setBounds (col.removeFromTop (px (30)));
+        col.removeFromTop (px (6));
+        autoPill->setBounds (col);
+    }
     for (auto* k : { xo[0], xo[1], xo[2], knee, mix }) k->setBounds (bottom.removeFromLeft (bw));
 
     auto d = dynPanel.reduced (px (14)).withTrimmedTop (px (22));
@@ -1091,6 +1280,13 @@ void MultibandPage::paint (juce::Graphics& g)
         g.drawText ((gdb > 0 ? "+" : "") + String (gdb, 1) + " dB", r, Justification::centredRight);
     }
 
+    if (proc.apvts.getRawParameterValue ("mbAuto")->load() > 0.5f && on)
+    {
+        g.setColour (ui::green);
+        g.setFont (ui::font (10.f * s, true));
+        g.drawText ("AUTO " + String (proc.mbAutoDb.load(), 1) + " dB", mbPanel.toFloat().reduced (14.f * s, 10.f * s).removeFromTop (16.f * s),
+                    Justification::centredRight);
+    }
     auto help = dynPanel.toFloat().reduced (16.f * s, 10.f * s).removeFromBottom (44.f * s);
     g.setColour (ui::dim);
     g.setFont (ui::font (10.f * s));
@@ -1161,8 +1357,18 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       imgLow   (p.apvts, "imgLow",   "LOW WIDTH",  ui::violet, tr ("Largeur des graves (< 250 Hz). Moins de 100 % = plus mono et solide.")),
       imgMid   (p.apvts, "imgMid",   "MID WIDTH",  ui::violet, tr ("Largeur des médiums (250 Hz - 4 kHz).")),
       imgHigh  (p.apvts, "imgHigh",  "HIGH WIDTH", ui::violet, tr ("Largeur des aigus (> 4 kHz).")),
-      stabilize(p.apvts, "stabilize","STABILIZER", ui::cyan,   tr ("EQ dynamique : ramène doucement l'équilibre grave / médium / aigu vers celui d'un master moderne (ou de ta référence si elle est chargée).")),
+      stabilize(p.apvts, "stabilize","BALANCE", ui::cyan,   tr ("EQ dynamique : ramène doucement l'équilibre grave / médium / aigu vers celui d'un master moderne (ou de ta référence si elle est chargée).")),
       voiceFocus(p.apvts,"voiceFocus","VOICE FOCUS", ui::red,  tr ("Fait ressortir la voix d'un mix : présence sur le centre à VOICE FREQ, moins de boue, et les côtés s'écartent de sa zone pour la démasquer.")),
+      lowCut   (p.apvts, "lowCut",   "LOW CUT",    ui::pink,   tr ("Coupe-bas 24 dB/oct (10 Hz = coupé). Nettoie le sub inutile.")),
+      highCut  (p.apvts, "highCut",  "HIGH CUT",   ui::pink,   tr ("Coupe-haut 24 dB/oct (22 kHz = coupé).")),
+      clipKnee (p.apvts, "clipKnee", "KNEE",       ui::amber,  tr ("Genou du clipper SOFT : 0 = presque dur, 100 = très doux (à la manière d'un soft clipper de DAW).")),
+      spaceLow (p.apvts, "spaceLow", "LOW CUT",    ui::pink,   tr ("Sous cette fréquence, rien n'entre dans la réverb : les basses restent sèches.")),
+      depth3dFreq (p.apvts, "depth3dFreq", "3D FROM", ui::pink, tr ("La 3D n'agit qu'au-dessus de cette fréquence.")),
+      dsFreq   (p.apvts, "dsFreq",   "FREQ",       ui::cyan,   tr ("Fréquence du de-esser : au-dessus, les sifflantes sont réduites.")),
+      dsThr    (p.apvts, "dsThr",    "THRESHOLD",  ui::red,    tr ("Seuil : plus bas = le de-esser agit plus souvent.")),
+      dsRange  (p.apvts, "dsRange",  "RANGE",      ui::violet, tr ("Réduction maximale (0 = de-esser coupé).")),
+      specRes  (p.apvts, "specRes",  "RESONANCE",  ui::red,    tr ("Dompte les résonances : creuse les pics étroits qui dépassent leur voisinage.")),
+      specSpeed(p.apvts, "specSpeed","SPEED",      ui::pink,   tr ("Vitesse de l'équilibreur : lent = transparent, rapide = suit chaque passage.")),
       maskBand  (p.apvts, "maskBand",  ui::violet, tr ("MID 70 Hz-1,1 kHz · HI MID 600 Hz-2,6 kHz · HIGH > 1,5 kHz · FULL > 130 Hz")),
       clipShape (p.apvts, "clipShape", ui::red,    tr ("HARD = net · SOFT = genou doux · TUBE = saturation à lampe"), { "HARD", "SOFT", "TUBE" }),
       clipBand  (p.apvts, "clipBand",  ui::red,    tr ("FULL = tout · LOW < 200 Hz · MID 200 Hz-4 kHz · HIGH > 4 kHz"), { "FULL", "LOW", "MID", "HI" }),
@@ -1179,12 +1385,16 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       limOn     (p.apvts, "limOn",     "LIMITER",    ui::cyan,   tr ("Active le limiteur final.")),
       limTP     (p.apvts, "limTP",     "TRUE PEAK",  ui::cyan,   tr ("Contrôle aussi les pics entre les échantillons (inter-sample).")),
       limUnity  (p.apvts, "limUnity",  "UNITY",      ui::amber,  tr ("Écoute à gain égal : compense le GAIN pour juger la limitation sans l'effet volume.")),
+      clipMS    (p.apvts, "clipMS",    "M/S",        ui::violet, tr ("Clippe le centre et les côtés séparément : le centre reste solide, les côtés gardent leur ampleur.")),
+      dsListen  (p.apvts, "dsListen",  "LISTEN",     ui::amber,  tr ("N'écoute que ce que le de-esser retire.")),
+      specCut   (p.apvts, "specCut",   "CUT ONLY",   ui::amber,  tr ("L'équilibreur ne fait que creuser, jamais remonter.")),
       limStyle  (p.apvts, "limStyle",  tr ("Caractère du limiteur : Transparent, Punchy, Dynamic, Allround, Aggressive, Modern, Bus, Safe, Stealth (arrondit avant de limiter).")),
       satStyle1 (p.apvts, "satStyle1", tr ("Style de saturation de la bande basse.")),
       satStyle2 (p.apvts, "satStyle2", tr ("Style de saturation de la bande médium.")),
       satStyle3 (p.apvts, "satStyle3", tr ("Style de saturation de la bande aiguë.")),
+      specTarget(p.apvts, "specTarget", tr ("Courbe visée : MODERN (master actuel), PINK (bruit rose, équilibre neutre), REFERENCE (ta référence importée).")),
       charType  (p.apvts, "charType",  tr ("Modèle : bandes 15 / 30 ips, cassette, console à lampes, console classe A, transformateur, vinyle.")),
-      spectrum (p), scope (p), meters (p), autoMaster (p), mbPage (p)
+      spectrum (p), stereoView (p), limView (p), scope (p), meters (p), autoMaster (p), mbPage (p)
 {
     setLookAndFeel (&lnf);
 
@@ -1217,10 +1427,25 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     for (auto* c : std::initializer_list<juce::Component*> { &scDepth, &refMatch, &refImportBtn, &refClearBtn })
         place (*c, 4);
     place (mbPage, 5);
+    for (auto* c : std::initializer_list<juce::Component*> { &stabilize, &specRes, &specSpeed, &specTarget, &specCut,
+                                                            &dsFreq, &dsThr, &dsRange, &dsListen })
+        place (*c, 6);
+    for (auto* c : std::initializer_list<juce::Component*> { &lowCut, &highCut, &spaceLow, &depth3dFreq })
+        place (*c, 1);
+    place (clipKnee, 0); place (clipMS, 0); place (limView, 3);
+    addAndMakeVisible (stereoView);
+    for (int i = 0; i < 4; ++i)
+    {
+        auto* b = slotBtns.add (new juce::TextButton (juce::String::charToString ((juce::juce_wchar) ('A' + i))));
+        b->setColour (juce::TextButton::buttonOnColourId, ui::cyan);
+        b->setTooltip (tr ("Slots de comparaison A / B / C / D : chaque slot garde ses propres réglages."));
+        b->onClick = [this, i] { proc.selectSlot (i); };
+        addAndMakeVisible (b);
+    }
 
-    const char* tabNames[6] = { "CORE", "TONE & SPACE", "SATURATION", "MULTIBAND", "LIMITER & OUTPUT", "VOICE & REF" };
-    const int tabPage[6] = { 0, 1, 2, 5, 3, 4 };
-    for (int i = 0; i < 6; ++i)
+    const char* tabNames[7] = { "CORE", "TONE & SPACE", "SATURATION", "MULTIBAND", "SPECTRAL", "LIMITER", "VOICE & REF" };
+    const int tabPage[7] = { 0, 1, 2, 5, 6, 3, 4 };
+    for (int i = 0; i < 7; ++i)
     {
         auto* t = tabs.add (new juce::TextButton (tabNames[i]));
         t->setClickingTogglesState (false);
@@ -1254,7 +1479,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     abBtn.setColour (juce::TextButton::buttonOnColourId, ui::cyan);
     abBtn.setTooltip (tr ("Bascule entre les réglages A et B"));
     abBtn.onClick = [this] { proc.switchAB(); };
-    copyBtn.setTooltip (tr ("Copie les réglages actuels dans l'autre slot"));
+    copyBtn.setTooltip (tr ("Copie les réglages actuels dans le slot suivant (A → B → C → D → A)"));
     copyBtn.onClick = [this] { proc.copyToOtherSlot(); };
     undoBtn.setButtonText ("UNDO");
     undoBtn.setTooltip (tr ("Annuler (undo)"));
@@ -1283,6 +1508,8 @@ RavennEditor::RavennEditor (RavennProcessor& p)
         { "STEREO & 3D",           ui::violet, 1, {}, {} },
         { "SPACE",                 ui::cyan,   1, {}, {} },
         { "FATTEN",                ui::red,    2, {}, tr ("Écrase + sature. Le clipper et le limiteur rattrapent les pics.") },
+        { "SPECTRAL BALANCE",      ui::cyan,   6, {}, tr ("Équilibreur de spectre (~60 zones) : BALANCE ramène le grave / médium / aigu vers la courbe visée, RESONANCE creuse les pics étroits. Ajoute la latence d'une FFT quand il est actif.") },
+        { "DE-ESSER",              ui::red,    6, {}, tr ("Réduit les sifflantes au-dessus de FREQ. RANGE à 0 = coupé.") },
         { "MULTIBAND SATURATION",  ui::red,    2, {}, tr ("Saturation 3 bandes, un style par bande. Le volume reste à peu près stable quand tu pousses le drive.") },
         { "CHARACTER",             ui::amber,  2, {}, tr ("Bandes, consoles, transfo, vinyle. Le bruit n'existe que si tu montes CRACKLE.") },
         { "LIMITER",               ui::cyan,   3, {}, tr ("Brickwall à anticipation, true peak, relâchement adaptatif.") },
@@ -1321,6 +1548,7 @@ void RavennEditor::place (juce::Component& c, int pg)
 void RavennEditor::setPage (int pg)
 {
     page = pg;
+    spectrum.showBands = (pg == 5);
     for (auto& [c, p] : pageOf) c->setVisible (p == page);
     for (auto* tb : tabs) tb->setToggleState ((int) tb->getProperties()["page"] == page, juce::dontSendNotification);
     repaint();
@@ -1330,8 +1558,11 @@ void RavennEditor::refreshPresets()
 {
     presetBox.clear (juce::dontSendNotification);
     int id = 1;
-    presetBox.addSectionHeading ("USINE");
-    for (auto& n : proc.presets.getFactoryNames()) presetBox.addItem (n, id++);
+    for (auto& [catName, names] : proc.presets.getFactoryByCategory())
+    {
+        presetBox.addSectionHeading (catName);
+        for (auto& n : names) presetBox.addItem (n, id++);
+    }
     auto user = proc.presets.getUserNames();
     if (! user.isEmpty())
     {
@@ -1401,10 +1632,10 @@ void RavennEditor::timerCallback()
     if (slot != shownAB)
     {
         shownAB = slot;
-        abBtn.setButtonText (slot == 0 ? "A" : "B");
-        copyBtn.setButtonText (slot == 0 ? tr ("A → B") : tr ("B → A"));
+        copyBtn.setButtonText (tr ("→"));
     }
-    abBtn.setToggleState (true, juce::dontSendNotification);
+    for (int i = 0; i < slotBtns.size(); ++i) slotBtns[i]->setToggleState (i == slot, juce::dontSendNotification);
+    if (page == 6) repaint (dsInfoArea);
 
     // Undo : une etape par geste (rien tant que la souris est enfoncee)
     if (! juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
@@ -1557,7 +1788,7 @@ void RavennEditor::paint (juce::Graphics& g)
     g.drawText ("ravenn", word, Justification::bottomLeft);
     g.setColour (ui::dim);
     g.setFont (ui::font (8.f * s, true, 0.5f));
-    g.drawText ("MASTERING SUITE", la.withTrimmedLeft (2.f * s), Justification::topLeft);
+    g.drawText (String ("MASTERING SUITE  ") + JucePlugin_VersionString, la.withTrimmedLeft (2.f * s), Justification::topLeft);
 
 
     auto tag = [&] (Component& c, const String& t)
@@ -1580,6 +1811,16 @@ void RavennEditor::paint (juce::Graphics& g)
     tag (satStyle3, "HIGH");
     tag (charType, "MODEL");
 
+    if (page == 6)
+    {
+        const float gr = proc.dsGrAcc.exchange (0.f);
+        dsGrDisp = juce::jmin (gr, dsGrDisp * 0.8f);
+        g.setFont (ui::font (11.f * s, true));
+        g.setColour (dsGrDisp < -0.1f ? ui::cyan : ui::dim);
+        g.drawText (proc.apvts.getRawParameterValue ("dsRange")->load() > 0.f
+                        ? tr ("Réduction des sifflantes : ") + String (dsGrDisp, 1) + " dB" : tr ("De-esser coupé (RANGE à 0)"),
+                    dsInfoArea, Justification::centred);
+    }
     if (page == 4)
     {
         g.setFont (ui::font (11.5f * s, true));
@@ -1618,13 +1859,15 @@ void RavennEditor::resized()
     saveBtn.setBounds (R (654, 18, 56, 34));
     folderBtn.setBounds (R (712, 18, 76, 34));
     importBtn.setBounds (R (790, 18, 66, 34));
-    noLatency.setBounds (R (864, 18, 112, 34));
-    bypass.setBounds (R (982, 18, 92, 34));
-    abBtn.setBounds (R (1080, 18, 40, 34));
-    copyBtn.setBounds (R (1126, 18, 102, 34));
+    noLatency.setBounds (R (862, 18, 108, 34));
+    bypass.setBounds (R (974, 18, 86, 34));
+    for (int i = 0; i < slotBtns.size(); ++i) slotBtns[i]->setBounds (R (1066 + 30.f * (float) i, 18, 30, 34));
+    copyBtn.setBounds (R (1188, 18, 40, 34));
+    abBtn.setBounds ({});
 
     // ---- Zones fixes
-    spectrum.setBounds (R (12, 82, 976, 214));
+    spectrum.setBounds (R (12, 82, 770, 214));
+    stereoView.setBounds (R (792, 82, 196, 214));
     meters.setBounds (R (1000, 82, 228, 434));
     autoMaster.setBounds (R (1000, 528, 228, 260));
     tabArea = R (12, 306, 976, 30);
@@ -1648,15 +1891,18 @@ void RavennEditor::resized()
     scope.setBounds (R (324, Y + 260, 340, H - 260));
     area ("DYNAMICS") = R (676, Y, 312, H);
     {
+        // The Mask et sa bande sont cote a cote : la bande se regle juste sous le bouton
         auto a = inner ("COLOR");
         body.setBounds (a.removeFromBottom (px (30)).withSizeKeepingCentre (px (120), px (30)));
-        a.removeFromBottom (px (10));
-        maskBand.setBounds (a.removeFromBottom (px (30)));
-        a.removeFromBottom (px (20));
-        auto top = a.removeFromTop (a.getHeight() / 2);
+        a.removeFromBottom (px (8));
+        auto top = a.removeFromTop (a.getHeight() * 56 / 100);
         auto bot = a;
-        mouth.setBounds (top.removeFromLeft (top.getWidth() / 2).reduced (px (4)));
-        mask.setBounds (top.reduced (px (4)));
+        auto left = top.removeFromLeft (top.getWidth() / 2), right = top;
+        mouth.setBounds (left.reduced (px (4)));
+        maskBand.setColumns (2);
+        maskBand.setBounds (right.removeFromBottom (px (50)).reduced (px (4), 0));
+        right.removeFromBottom (px (20));
+        mask.setBounds (right.reduced (px (4), 0));
         depth.setBounds (bot.removeFromLeft (bot.getWidth() / 2).reduced (px (12)));
         analog.setBounds (bot.reduced (px (12)));
     }
@@ -1664,13 +1910,18 @@ void RavennEditor::resized()
         auto a = inner ("CLIPPER");
         auto ctrl = a.removeFromBottom (px (30));
         a.removeFromBottom (px (18));
-        in.setBounds (a.removeFromLeft (px (88)).withSizeKeepingCentre (px (88), px (110)));
-        out.setBounds (a.removeFromRight (px (88)).withSizeKeepingCentre (px (88), px (110)));
+        in.setBounds (a.removeFromLeft (px (78)).withSizeKeepingCentre (px (78), px (104)));
+        out.setBounds (a.removeFromRight (px (78)).withSizeKeepingCentre (px (78), px (104)));
+        {
+            auto kc = a.removeFromRight (px (64)).withSizeKeepingCentre (px (64), px (112));
+            clipMS.setBounds (kc.removeFromBottom (px (24)).reduced (px (6), 0));
+            clipKnee.setBounds (kc);
+        }
         clip.setBounds (a.reduced (px (2), 0));
-        link.setBounds (ctrl.removeFromLeft (px (62)));
-        ctrl.removeFromLeft (px (8));
-        clipShape.setBounds (ctrl.removeFromLeft (px (118)));
-        ctrl.removeFromLeft (px (8));
+        link.setBounds (ctrl.removeFromLeft (px (56)));
+        ctrl.removeFromLeft (px (6));
+        clipShape.setBounds (ctrl.removeFromLeft (px (112)));
+        ctrl.removeFromLeft (px (6));
         clipBand.setBounds (ctrl);
     }
     {
@@ -1703,9 +1954,9 @@ void RavennEditor::resized()
         voice.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         voiceFreq.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         voiceFocus.setBounds (r2.reduced (px (3)));
-        stabilize.setBounds (r3.removeFromLeft (w).reduced (px (3)));
-        r3.removeFromLeft (px (10));
-        eqPos.setBounds (r3.withSizeKeepingCentre (r3.getWidth() - px (10), px (28)).translated (0, px (8)));
+        lowCut.setBounds (r3.removeFromLeft (w).reduced (px (3)));
+        highCut.setBounds (r3.removeFromLeft (w).reduced (px (3)));
+        eqPos.setBounds (r3.withSizeKeepingCentre (r3.getWidth() - px (6), px (28)).translated (0, px (8)));
     }
     {
         auto a = inner ("FRESH AIR");
@@ -1714,21 +1965,23 @@ void RavennEditor::resized()
     }
     {
         auto a = inner ("STEREO & 3D");
-        monoBass.setBounds (a.removeFromBottom (px (30)).withSizeKeepingCentre (px (130), px (30)));
-        a.removeFromBottom (px (8));
-        const int rh = a.getHeight() / 2, w = a.getWidth() / 3;
-        auto r1 = a.removeFromTop (rh), r2 = a;
+        const int rh = a.getHeight() / 3, w = a.getWidth() / 3;
+        auto r1 = a.removeFromTop (rh), r2 = a.removeFromTop (rh), r3 = a;
         width.setBounds (r1.removeFromLeft (w).reduced (px (3)));
         monoFreq.setBounds (r1.removeFromLeft (w).reduced (px (3)));
         depth3d.setBounds (r1.reduced (px (3)));
         imgLow.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         imgMid.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         imgHigh.setBounds (r2.reduced (px (3)));
+        depth3dFreq.setBounds (r3.removeFromRight (w).reduced (px (3)));
+        monoBass.setBounds (r3.withSizeKeepingCentre (r3.getWidth() - px (20), px (30)));
     }
     {
         auto a = inner ("SPACE");
-        space.setBounds (a.removeFromTop (a.getHeight() / 2).reduced (px (6)));
-        spaceSize.setBounds (a.reduced (px (12)));
+        const int rh = a.getHeight() / 3;
+        space.setBounds (a.removeFromTop (rh).reduced (px (4)));
+        spaceSize.setBounds (a.removeFromTop (rh).reduced (px (8)));
+        spaceLow.setBounds (a.reduced (px (8)));
     }
 
     // ================= PAGE 2 : SATURATION & CHARACTER
@@ -1737,7 +1990,7 @@ void RavennEditor::resized()
     area ("CHARACTER")            = R (686, Y, 302, H);
     {
         auto a = inner ("MULTIBAND SATURATION");
-        a.removeFromBottom (px (46));   // aide
+        a.removeFromBottom (px (46));
         auto bottom = a.removeFromBottom (px (120));
         const int cw = a.getWidth() / 3;
         NeonKnob* dr[3] = { &satDrive1, &satDrive2, &satDrive3 };
@@ -1771,42 +2024,71 @@ void RavennEditor::resized()
         charWow.setBounds (a.removeFromLeft (a.getWidth() / 2).reduced (px (6)));
         charNoise.setBounds (a.reduced (px (6)));
     }
+
     // ================= PAGE 5 : MULTIBAND
     mbPage.setBounds (R (12, Y, 976, H));
+
+    // ================= PAGE 6 : SPECTRAL & DE-ESSER
+    area ("SPECTRAL BALANCE") = R (12, Y, 600, H);
+    area ("DE-ESSER")         = R (624, Y, 364, H);
+    {
+        auto a = inner ("SPECTRAL BALANCE");
+        a.removeFromBottom (px (60));
+        auto top = a.removeFromTop (px (34)).withTrimmedTop (px (4));
+        specTarget.setBounds (top.removeFromLeft (top.getWidth() / 2).reduced (px (6), 0));
+        specCut.setBounds (top.withSizeKeepingCentre (px (140), top.getHeight()));
+        a.removeFromTop (px (8));
+        const int w = a.getWidth() / 3;
+        stabilize.setBounds (a.removeFromLeft (w).reduced (px (6)));
+        specRes.setBounds (a.removeFromLeft (w).reduced (px (6)));
+        specSpeed.setBounds (a.reduced (px (16)));
+    }
+    {
+        auto a = inner ("DE-ESSER");
+        a.removeFromBottom (px (60));
+        dsInfoArea = a.removeFromBottom (px (24));
+        dsListen.setBounds (a.removeFromBottom (px (30)).withSizeKeepingCentre (px (120), px (30)));
+        a.removeFromBottom (px (6));
+        auto r1 = a.removeFromTop (a.getHeight() / 2);
+        dsRange.setBounds (r1.withSizeKeepingCentre (r1.getWidth() / 2, r1.getHeight()).reduced (px (2)));
+        dsFreq.setBounds (a.removeFromLeft (a.getWidth() / 2).reduced (px (6)));
+        dsThr.setBounds (a.reduced (px (6)));
+    }
 
     // ================= PAGE 3 : LIMITER & OUTPUT
     area ("LIMITER") = R (12, Y, 640, H);
     area ("OUTPUT")  = R (664, Y, 324, H);
     {
         auto a = inner ("LIMITER");
-        a.removeFromBottom (px (30));   // aide
-        auto left = a.removeFromLeft (px (230));
+        a.removeFromBottom (px (22));   // aide
+        auto left = a.removeFromLeft (px (200));
         auto pills = left.removeFromBottom (px (30));
         limOn.setBounds (pills.removeFromLeft (pills.getWidth() / 3).reduced (px (2), 0));
         limTP.setBounds (pills.removeFromLeft (pills.getWidth() / 2).reduced (px (2), 0));
         limUnity.setBounds (pills.reduced (px (2), 0));
-        left.removeFromBottom (px (8));
+        left.removeFromBottom (px (6));
         limGain.setBounds (left.removeFromTop (left.getHeight() / 2).reduced (px (4)));
         limCeil.setBounds (left.reduced (px (4)));
-        a.removeFromLeft (px (12));
-        a.removeFromTop (px (16));
-        auto top = a.removeFromTop (px (30));
+        a.removeFromLeft (px (10));
+        limView.setBounds (a.removeFromTop (px (112)));
+        a.removeFromTop (px (20));
+        auto top = a.removeFromTop (px (28));
         limStyle.setBounds (top.removeFromLeft (top.getWidth() / 2 + px (40)));
         top.removeFromLeft (px (10));
         dither.setBounds (top);
-        a.removeFromTop (px (10));
+        a.removeFromTop (px (6));
         const int rh = a.getHeight() / 2, cw = a.getWidth() / 3;
         auto r1 = a.removeFromTop (rh), r2 = a;
-        limLook.setBounds (r1.removeFromLeft (cw).reduced (px (4)));
-        limAttack.setBounds (r1.removeFromLeft (cw).reduced (px (4)));
-        limRelease.setBounds (r1.reduced (px (4)));
-        limLinkT.setBounds (r2.removeFromLeft (cw).reduced (px (4)));
-        limLinkR.setBounds (r2.removeFromLeft (cw).reduced (px (4)));
-        limSoft.setBounds (r2.reduced (px (4)));
+        limLook.setBounds (r1.removeFromLeft (cw).reduced (px (2)));
+        limAttack.setBounds (r1.removeFromLeft (cw).reduced (px (2)));
+        limRelease.setBounds (r1.reduced (px (2)));
+        limLinkT.setBounds (r2.removeFromLeft (cw).reduced (px (2)));
+        limLinkR.setBounds (r2.removeFromLeft (cw).reduced (px (2)));
+        limSoft.setBounds (r2.reduced (px (2)));
     }
     {
         auto a = inner ("OUTPUT");
-        a.removeFromBottom (px (62));   // aide delta
+        a.removeFromBottom (px (62));
         os.setBounds (a.removeFromBottom (px (28)));
         a.removeFromBottom (px (22));
         mix.setBounds (a.removeFromLeft (a.getWidth() / 2).reduced (px (6)));

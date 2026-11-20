@@ -6,7 +6,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
 
-project(ravenn VERSION 1.4.1)
+project(ravenn VERSION 1.5.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,12 +26,25 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# AAX (Pro Tools) : necessite le SDK AAX d'Avid (compte developpeur gratuit) et,
+# pour Pro Tools "normal", une signature PACE / iLok. Desactive par defaut.
+option(RAVENN_AAX "Construire aussi le format AAX" OFF)
+set(RAVENN_FORMATS VST3 AU Standalone)
+if(RAVENN_AAX)
+    if(NOT AAX_SDK_PATH)
+        message(FATAL_ERROR "RAVENN_AAX : indique le dossier du SDK AAX avec -DAAX_SDK_PATH=...")
+    endif()
+    juce_set_aax_sdk_path(${AAX_SDK_PATH})
+    list(APPEND RAVENN_FORMATS AAX)
+endif()
+
 juce_add_plugin(ravenn
     COMPANY_NAME "ravenn"
     BUNDLE_ID "com.ravenn.ravenn"
     PLUGIN_MANUFACTURER_CODE Rvnd
     PLUGIN_CODE Rvnn
-    FORMATS VST3 AU Standalone
+    FORMATS ${RAVENN_FORMATS}
+    AAX_CATEGORY AAX_ePlugInCategory_Dynamics
     PRODUCT_NAME "ravenn"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE

@@ -68,10 +68,12 @@ public:
     Segmented (juce::AudioProcessorValueTreeState& s, const juce::String& id, juce::Colour c,
                const juce::String& tip, juce::StringArray labels = {});
     void resized() override;
+    void setColumns (int c) { columns = c; resized(); }
 
 private:
     juce::OwnedArray<juce::TextButton> buttons;
     std::unique_ptr<juce::ParameterAttachment> attachment;
+    int columns = 0;
 };
 
 class Pill : public juce::Component
@@ -129,6 +131,40 @@ private:
     float viewTop = 0.f;
     bool inSilent = true, outSilent = true;
     juce::Image backdrop;
+    int dragX = -1;
+    bool overX (float x, int& which) const;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    juce::Rectangle<float> plotArea;
+public:
+    bool showBands = false;   // onglet MULTIBAND : coupures deplacables + reduction par bande
+};
+
+// Vectorscope : image stereo (Lissajous M/S) + correlation
+class StereoView : public juce::Component, private juce::Timer
+{
+public:
+    explicit StereoView (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override { repaint(); }
+    RavennProcessor& proc;
+    float corrDisp = 1.f, widthDisp = 0.f;
+};
+
+// Vue du limiteur : crete avant limitation, reduction de gain, plafond
+class LimiterView : public juce::Component, private juce::Timer
+{
+public:
+    explicit LimiterView (RavennProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override { repaint(); }
+    RavennProcessor& proc;
 };
 
 class MeterColumn : public juce::Component, private juce::Timer
@@ -144,7 +180,7 @@ private:
     juce::TextButton resetBtn;
     float grDisp = 0.f, limDisp = 0.f, inDisp = -100.f, outDisp = -100.f, inHold = -100.f, outHold = -100.f;
     int inHoldT = 0, outHoldT = 0;
-    float lufsM = -100.f, lufsS = -100.f, lufsI = -100.f, tp = -100.f, agc = 0.f, clipEff = 0.f;
+    float lufsM = -100.f, lufsS = -100.f, lufsI = -100.f, lufsL = -100.f, tp = -100.f, agc = 0.f, clipEff = 0.f;
 };
 
 class AutoMasterPanel : public juce::Component, private juce::Timer
@@ -184,6 +220,7 @@ private:
     NeonKnob *knee = nullptr, *mix = nullptr;
     std::array<NeonKnob*, 2> dFreq {}, dQ {}, dThr {}, dRange {};
     Pill* onPill = nullptr;
+    Pill* autoPill = nullptr;
     std::array<juce::Rectangle<int>, 4> meterArea;
     std::array<juce::Rectangle<int>, 2> dynArea;
     juce::Rectangle<int> mbPanel, dynPanel;
@@ -229,10 +266,12 @@ private:
              satXLo, satXHi, satMix, satDrive1, satDrive2, satDrive3,
              charAmt, charWow, charNoise, airMid, airHigh, voice, voiceFreq,
              depth3d, space, spaceSize, scDepth, refMatch,
-             fatten, fatColor, imgLow, imgMid, imgHigh, stabilize, voiceFocus;
+             fatten, fatColor, imgLow, imgMid, imgHigh, stabilize, voiceFocus,
+             lowCut, highCut, clipKnee, spaceLow, depth3dFreq, dsFreq, dsThr, dsRange, specRes, specSpeed;
     Segmented maskBand, clipShape, clipBand, eqPos, os, dither;
-    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity;
-    ChoiceBox limStyle, satStyle1, satStyle2, satStyle3, charType;
+    Pill link, monoBass, delta, autoGain, noLatency, bypass, body, limOn, limTP, limUnity, clipMS, dsListen, specCut;
+    ChoiceBox limStyle, satStyle1, satStyle2, satStyle3, charType, specTarget;
+    juce::OwnedArray<juce::TextButton> slotBtns;
 
     juce::ComboBox presetBox;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, saveBtn, folderBtn, importBtn, abBtn, copyBtn,
@@ -241,6 +280,8 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 
     Spectrum spectrum;
+    StereoView stereoView;
+    LimiterView limView;
     Scope scope;
     MeterColumn meters;
     AutoMasterPanel autoMaster;
@@ -248,12 +289,13 @@ private:
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;
-    juce::Rectangle<int> header, logoArea, tabArea, refInfoArea, scInfoArea;
+    juce::Rectangle<int> header, logoArea, tabArea, refInfoArea, scInfoArea, dsInfoArea;
     juce::Image background, ravenImg, ravenCrisp, coverImg;
     juce::String shownPreset, refText, scText;
     int shownAB = -1, page = 0, bgPage = -1;
     float bgScale = 0.f;
     bool shownBypass = false;
+    float dsGrDisp = 0.f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RavennEditor)
 };

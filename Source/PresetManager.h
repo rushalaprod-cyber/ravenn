@@ -9,6 +9,8 @@ public:
     explicit PresetManager (juce::AudioProcessorValueTreeState& s);
 
     juce::StringArray getFactoryNames() const;
+    // presets d'usine ranges par categorie (dans l'ordre d'affichage)
+    std::vector<std::pair<juce::String, juce::StringArray>> getFactoryByCategory() const;
     juce::StringArray getUserNames() const;
     juce::StringArray getAllNames() const;
     bool isFactory (const juce::String& name) const;
@@ -31,6 +33,7 @@ private:
     {
         juce::String name;
         std::vector<std::pair<juce::String, float>> values;
+        juce::String category;
     };
 
     void resetAll();

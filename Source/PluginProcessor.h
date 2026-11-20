@@ -57,6 +57,12 @@ public:
     std::atomic<bool> scConnected { false };
     std::array<std::atomic<float>, 4> mbGrAcc;      // reduction par bande du multibande (dB)
     std::array<std::atomic<float>, 2> dynGain;      // gain actuel des bandes dynamiques (dB)
+    std::atomic<float> mbAutoDb { 0.f }, dsGrAcc { 0.f }, longTermLufs { -100.f };
+    // Vue du limiteur : crete avant limitation et reduction, une tranche par 10 ms
+    std::array<std::atomic<float>, 512> limViewIn, limViewGr;
+    std::atomic<int> limViewWrite { 0 };
+    // Vue stereo (vectorscope) : derniers echantillons de sortie
+    std::array<float, 8192> stereoL {}, stereoR {};
 
     static constexpr int scopeSize = 512;
     std::array<std::atomic<float>, scopeSize> scopePeak, scopeGr;
@@ -71,6 +77,7 @@ public:
 
     // ---- A/B
     void switchAB();
+    void selectSlot (int slot);
     void copyToOtherSlot();
     int getABSlot() const { return abSlot; }
 
@@ -113,10 +120,11 @@ private:
     bool linkWasOn = false;
 
     void processChunk (float* const* ch, const float* const* sc, int nsc, int nch, int n);
-    void updateLatency (int osIdx, int lookSamples, bool wowOn);
+    void updateLatency (int osIdx, int lookSamples, bool wowOn, bool specOn);
     void resetFilters();
     double applyDepth (double m, double amount) noexcept;
-    static double clipFn (double x, int shape) noexcept;
+    double clipFn (double x, int shape) const noexcept;
+    double softK = 0.6;
 
     void analyzeInput (float* const* ch, int nch, int n);
     void analyzeOutput (float* const* ch, int nch, int n);
@@ -143,7 +151,10 @@ private:
                            *fatten {}, *fatColor {}, *imgLow {}, *imgMid {}, *imgHigh {}, *stabilize {}, *voiceFocus {},
                            *mbOn {}, *mbX[3] {}, *mbKnee {}, *mbMix {},
                            *mbThr[4] {}, *mbRatio[4] {}, *mbAtt[4] {}, *mbRel[4] {}, *mbGain[4] {}, *mbSolo[4] {}, *mbByp[4] {},
-                           *dynFreq[2] {}, *dynQ[2] {}, *dynThr[2] {}, *dynRange[2] {};
+                           *dynFreq[2] {}, *dynQ[2] {}, *dynThr[2] {}, *dynRange[2] {},
+                           *lowCut {}, *highCut {}, *clipKnee {}, *clipMS {}, *spaceLow {}, *depth3dFreq {},
+                           *dsFreq {}, *dsThr {}, *dsRange {}, *dsListen {}, *specRes {}, *specSpeed {}, *specTarget {},
+                           *specCut {}, *mbAuto {};
     } p;
 
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 5> oversamplers;
@@ -152,7 +163,7 @@ private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 1 << 15 };
 
     int currentOs = -1, currentLook = -1, maxBlock = 512, lastEqPos = -1, lastClipBand = -1;
-    bool currentWow = false;
+    bool currentWow = false, currentSpec = false;
     double baseRate = 44100.0;
 
     // ---- Filtres et modules
@@ -185,6 +196,16 @@ private:
     gdsp::VoiceFocus voiceFocus;
     gdsp::MultibandComp mbComp;
     gdsp::DynEQ dynEq;
+    gdsp::DeEsser deEsser;
+    gdsp::SpectralEngine spectral;
+    std::array<gdsp::LR4, 2> lowCutF, highCutF;
+    float lastLowCut = -1.f, lastHighCut = -1.f;
+    double mbInMs = 0, mbOutMs = 0, mbAg = 1.0;
+    // LUFS long terme (30 s)
+    std::array<gdsp::Biquad, 2> ltShelf, ltHp;
+    std::vector<double> ltBlocks;
+    double ltAcc = 0; int ltCount = 0, ltBlock = 4800, ltPos = 0;
+    float limViewPk = 0.f, limViewGrMin = 1.f; int limViewCount = 0;
     juce::Random ditherRng;
     bool satWasOn = false, charWasOn = false, airWasOn = false, fatWasOn = false;
     float lastVoice = 1000.f, lastVoiceF = -1.f;
@@ -201,7 +222,7 @@ private:
     int scopeCount = 0, scopeSlice = 480;
     float scopeAcc = 0.f;
 
-    std::array<juce::ValueTree, 2> abState;
+    std::array<juce::ValueTree, 4> abState;
     int abSlot = 0;
 
     // ---- Reference

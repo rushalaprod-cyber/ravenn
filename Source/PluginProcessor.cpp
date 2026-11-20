@@ -133,7 +133,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     dB  ("limGain",  "Limiter Gain",   0.f, 24.f, 0.f);
     dB  ("limCeil",  "Ceiling",       -12.f, 0.f, -0.3f);
     choice ("limStyle", "Limiter Style",
-            { "TRANSPARENT", "PUNCHY", "DYNAMIC", "ALLROUND", "AGGRESSIVE", "MODERN", "BUS", "SAFE", "STEALTH" }, 0);
+            { "TRANSPARENT", "PUNCHY", "DYNAMIC", "ALLROUND", "AGGRESSIVE", "MODERN", "BUS", "SAFE",
+              "STEALTH TIGHT", "STEALTH BALANCED", "STEALTH HARMONICS 1", "STEALTH HARMONICS 2" }, 0);
     ms  ("limLook",   "Lookahead",    0.f, 5.f, 1.5f, 2.f);
     ms  ("limAttack", "Attack",       0.f, 5.f, 1.f, 1.f);
     ms  ("limRelease","Release",      1.f, 1000.f, 80.f, 80.f);
@@ -182,6 +183,23 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     pct ("imgHigh",   "Imager High",   200.f, 100.f);
     pct ("stabilize", "Stabilizer",    100.f, 0.f);
     pct ("voiceFocus","Voice Focus",   100.f, 0.f);
+
+    // 1.5
+    hz  ("lowCut",  "Low Cut",   10.f, 300.f, 40.f, 10.f);
+    hz  ("highCut", "High Cut",  4000.f, 22000.f, 12000.f, 22000.f);
+    pct ("clipKnee", "Clip Knee", 100.f, 44.f);
+    toggle ("clipMS", "Clip M/S", false);
+    hz  ("spaceLow", "Space Low Cut", 40.f, 1000.f, 220.f, 220.f);
+    hz  ("depth3dFreq", "3D Low Cut", 200.f, 5000.f, 1000.f, 800.f);
+    hz  ("dsFreq",  "De-esser Freq", 2500.f, 12000.f, 6000.f, 6500.f);
+    dB  ("dsThr",   "De-esser Threshold", -60.f, 0.f, -30.f);
+    dB  ("dsRange", "De-esser Range", 0.f, 12.f, 0.f);
+    toggle ("dsListen", "De-esser Listen", false);
+    pct ("specRes",   "Resonance Tame", 100.f, 0.f);
+    pct ("specSpeed", "Spectral Speed", 100.f, 50.f);
+    choice ("specTarget", "Spectral Target", { "MODERN", "PINK", "REFERENCE" }, 0);
+    toggle ("specCut", "Spectral Cut Only", false);
+    toggle ("mbAuto", "MB Auto Gain", false);
 
     // 1.4 : compresseur multibande 4 bandes + EQ dynamique 2 bandes
     toggle ("mbOn", "Multiband", false);
@@ -292,6 +310,12 @@ RavennProcessor::RavennProcessor()
         p.mbByp[k] = apvts.getRawParameterValue ("mbByp" + n);
         mbGrAcc[(size_t) k].store (0.f);
     }
+    p.lowCut = get ("lowCut"); p.highCut = get ("highCut"); p.clipKnee = get ("clipKnee"); p.clipMS = get ("clipMS");
+    p.spaceLow = get ("spaceLow"); p.depth3dFreq = get ("depth3dFreq");
+    p.dsFreq = get ("dsFreq"); p.dsThr = get ("dsThr"); p.dsRange = get ("dsRange"); p.dsListen = get ("dsListen");
+    p.specRes = get ("specRes"); p.specSpeed = get ("specSpeed"); p.specTarget = get ("specTarget"); p.specCut = get ("specCut");
+    p.mbAuto = get ("mbAuto");
+    for (int i = 0; i < 512; ++i) { limViewIn[(size_t) i].store (0.f); limViewGr[(size_t) i].store (0.f); }
     for (int k = 0; k < 2; ++k)
     {
         const juce::String n (k + 1);
@@ -377,6 +401,19 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         r->snap();
     stabilizer.prepare (sampleRate);
     mbComp.prepare (sampleRate);
+    deEsser.prepare (sampleRate);
+    spectral.prepare (sampleRate);
+    lastLowCut = lastHighCut = -1.f;
+    mbInMs = mbOutMs = 0; mbAg = 1.0;
+    for (int c = 0; c < 2; ++c)
+    {
+        ltShelf[(size_t) c].highShelf (sampleRate, 1681.974450955533, 0.7071752369554196, 3.999843853973347);
+        ltHp[(size_t) c].highpass (sampleRate, 38.13547087602444, 0.5003270373238773);
+    }
+    ltBlock = juce::jmax (1, (int) (0.1 * sampleRate));
+    ltBlocks.assign (300, 0.0);
+    ltAcc = 0; ltCount = 0; ltPos = 0;
+    currentSpec = false;
     dynEq.prepare (sampleRate);
     voiceFocus.prepare (sampleRate);
     for (int b = 0; b < nOct; ++b) setOctaveFilter (amOutOct[(size_t) b], sampleRate, b);
@@ -403,10 +440,11 @@ void RavennProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const bool noLat = p.noLatency->load() > 0.5f;
     const int osIdx = noLat ? 0 : juce::jlimit (0, 4, (int) p.os->load());
     const int look = p.limOn->load() > 0.5f && ! noLat ? gdsp::Limiter::latencyFor (sampleRate, p.limLook->load()) : 0;
-    updateLatency (osIdx, look, ! noLat && p.charWow->load() > 0.f);
+    updateLatency (osIdx, look, ! noLat && p.charWow->load() > 0.f,
+                   ! noLat && (p.stabilize->load() > 0.f || p.specRes->load() > 0.f));
 }
 
-void RavennProcessor::updateLatency (int osIdx, int lookSamples, bool wowOn)
+void RavennProcessor::updateLatency (int osIdx, int lookSamples, bool wowOn, bool specOn)
 {
     if (osIdx != currentOs)
     {
@@ -416,9 +454,12 @@ void RavennProcessor::updateLatency (int osIdx, int lookSamples, bool wowOn)
     }
     currentLook = lookSamples;
     currentWow = wowOn;
+    if (specOn != currentSpec) spectral.reset();
+    currentSpec = specOn;
 
     const int lat = (int) std::lround (oversamplers[(size_t) osIdx]->getLatencyInSamples())
-                  + lookSamples + (wowOn ? gdsp::Wow::baseSamples (baseRate) : 0);
+                  + lookSamples + (wowOn ? gdsp::Wow::baseSamples (baseRate) : 0)
+                  + (specOn ? gdsp::SpectralEngine::latencyFor (baseRate) : 0);
     dryDelay.reset();
     dryDelay.setDelay ((float) lat);
     if (lat != getLatencySamples()) setLatencySamples (lat);
@@ -452,16 +493,26 @@ void RavennProcessor::resetFilters()
     imager.reset();
     stabilizer.reset();
     mbComp.reset();
+    deEsser.reset();
+    for (auto& f : lowCutF) f.reset();
+    for (auto& f : highCutF) f.reset();
     dynEq.reset();
     voiceFocus.reset();
 }
 
 //==============================================================================
-double RavennProcessor::clipFn (double x, int shape) noexcept
+double RavennProcessor::clipFn (double x, int shape) const noexcept
 {
     switch (shape)
     {
-        case 1:  return gdsp::shape::soft (x);
+        case 1:
+        {
+            // genou reglable (seuil du soft clip, a la maniere d'un soft clipper de DAW)
+            const double a = std::abs (x);
+            if (a <= softK) return x;
+            const double s = softK + (1.0 - softK) * std::tanh ((a - softK) / (1.0 - softK));
+            return x < 0 ? -s : s;
+        }
         case 2:  return gdsp::shape::analog (x);
         default: return gdsp::shape::hard (x);
     }
@@ -529,13 +580,16 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     const int lookS = limOn ? gdsp::Limiter::latencyFor (baseRate, lookMs) : 0;
     const double wowAmt = p.charWow->load() * 0.01;
     const bool wowOn = ! noLatency && wowAmt > 0.0;
-    if (osIdx != currentOs || lookS != currentLook || wowOn != currentWow)
-        updateLatency (osIdx, lookS, wowOn);
+    const bool specOn = ! noLatency && (p.stabilize->load() > 0.f || p.specRes->load() > 0.f);
+    if (osIdx != currentOs || lookS != currentLook || wowOn != currentWow || specOn != currentSpec)
+        updateLatency (osIdx, lookS, wowOn, specOn);
+    softK = 1.0 - 0.9 * p.clipKnee->load() * 0.01;
     const double osRate = baseRate * (double) (1 << currentOs);
 
     const int maskBand  = juce::jlimit (0, 3, (int) p.maskBand->load());
     const int clipShape = juce::jlimit (0, 2, (int) p.clipShape->load());
     const int clipBand  = juce::jlimit (0, 3, (int) p.clipBand->load());
+    const bool clipMS = p.clipMS->load() > 0.5f;
     const int eqPos     = juce::jlimit (0, 1, (int) p.eqPos->load());
     const double mouth = p.mouth->load() * 0.01, mask = p.mask->load() * 0.01;
     const double depth = p.depth->load() * 0.01, analog = p.analog->load() * 0.01;
@@ -601,6 +655,14 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     }
     ottFx.setXover (baseRate, p.ottXLo->load(), p.ottXHi->load());
     space.setSize (p.spaceSize->load() * 0.01);
+    space.setLowCut (p.spaceLow->load());
+    depth3d.setFreq (p.depth3dFreq->load());
+    deEsser.setFreq (p.dsFreq->load());
+    {
+        const float lc = p.lowCut->load(), hc = p.highCut->load();
+        if (lc != lastLowCut)  { for (auto& f : lowCutF)  f.setHighpass (baseRate, lc); lastLowCut = lc; }
+        if (hc != lastHighCut) { for (auto& f : highCutF) f.setLowpass (baseRate, juce::jmin ((double) hc, baseRate * 0.45)); lastHighCut = hc; }
+    }
     msat.setXover (osRate, p.satXLo->load(), p.satXHi->load());
     if (osRate != freshAir.fs) freshAir.prepare (osRate);
     if (osRate != fattener.fs) fattener.prepare (osRate);
@@ -669,29 +731,39 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         for (int i = 0; i < n; ++i)
         {
             double v = ch[c][i];
+            if (lastLowCut > 10.5f)    v = lowCutF[(size_t) c].process (v);
+            if (lastHighCut < 21900.f) v = highCutF[(size_t) c].process (v);
             if (eqPos == 0) v = eq[(size_t) c].process (v);
             if (refMatch > 0.0) v = matchEq.process (c, v);
             ch[c][i] = (float) v;
         }
 
     // ---------- 2b. STABILIZER : equilibre par octave ramene vers la cible
-    rStab.set (stabAmt, n);
-    if (stabAmt > 0.0 || rStab.cur > 0.0 || stabilizer.active)
+    // (moteur spectral STFT : BALANCE = "stabilize", RESONANCE = "specRes")
+    if (currentSpec)
     {
-        float target[nOct];
-        const bool rv = refValid.load();
-        double tot = 0;
-        for (int b = 0; b < nOct; ++b) { target[b] = rv ? refOct[(size_t) b].load() : defaultTilt[b]; tot += std::pow (10.0, target[b] / 10.0); }
-        const float norm = (float) (10.0 * std::log10 (std::max (tot, 1e-20)));
-        for (auto& t : target) t -= norm;
+        const int tsel = juce::jlimit (0, 2, (int) p.specTarget->load());
+        float oct[nOct];
+        const bool useRef = tsel == 2 && refValid.load();
+        for (int b = 0; b < nOct; ++b) oct[b] = useRef ? refOct[(size_t) b].load() : defaultTilt[b];
+        // densite par Hz (dB) en fonction de log2(f) : energie d'octave - 10 log10(f)
+        auto target = [&] (double lf) -> double
+        {
+            if (tsel == 1) return -3.0103 * lf;                     // rose : -3 dB/oct en densite
+            const double pos = juce::jlimit (0.0, 9.0, lf - std::log2 (31.5));
+            const int i0 = (int) pos, i1 = juce::jmin (9, i0 + 1);
+            const double e = oct[i0] + (oct[i1] - oct[i0]) * (pos - i0);
+            return e - 3.0103 * lf;
+        };
+        spectral.cutOnly = p.specCut->load() > 0.5f;
+        const double bal = stabAmt, res = p.specRes->load() * 0.01, spd = p.specSpeed->load() * 0.01;
         for (int i = 0; i < n; ++i)
         {
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
-            stabilizer.process (x, nch, rStab.next(), target);
+            spectral.process (x, nch, bal, res, spd, target);
             for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
         }
     }
-    rStab.finish();
 
     // ---------- 3. Sidechain voix (la voix creuse la prod la ou elle chante)
     if (nsc > 0 && scDepth > 0.0)
@@ -750,6 +822,22 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     }
     rOtt.finish(); rPunch.finish(); rSpace.finish();
 
+    // ---------- 5a. DE-ESSER
+    if (p.dsRange->load() > 0.f)
+    {
+        const double thr = p.dsThr->load(), rng = p.dsRange->load();
+        const bool listen = p.dsListen->load() > 0.5f;
+        double grm = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            deEsser.process (x, nch, thr, rng, listen);
+            grm = juce::jmin (grm, deEsser.lastGrDb);
+            for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+        }
+        updateMin (dsGrAcc, (float) grm);
+    }
+
     // ---------- 5b. MULTIBANDE 4 bandes + EQ DYNAMIQUE
     if (p.mbOn->load() > 0.5f)
     {
@@ -764,12 +852,22 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         mbComp.setXover (p.mbX[0]->load(), p.mbX[1]->load(), p.mbX[2]->load());
         mbComp.setTimes (ms);
         mbComp.grMin.fill (0);
+        const bool mbAuto = p.mbAuto->load() > 0.5f;
+        const double sA = 1.0 - std::exp (-1.0 / (0.8 * baseRate)), gA = 1.0 - std::exp (-1.0 / (0.3 * baseRate));
         for (int i = 0; i < n; ++i)
         {
             double x[2] = { ch[0][i], nch > 1 ? (double) ch[1][i] : 0.0 };
+            double pin = 0, pout = 0;
+            for (int c = 0; c < nch; ++c) pin += x[c] * x[c];
             mbComp.process (x, nch, ms);
-            for (int c = 0; c < nch; ++c) ch[c][i] = (float) x[c];
+            for (int c = 0; c < nch; ++c) pout += x[c] * x[c];
+            // AUTO GAIN : le multibande garde le meme volume qu'a son entree
+            mbInMs += sA * (pin - mbInMs); mbOutMs += sA * (pout - mbOutMs);
+            const double tg = (mbAuto && mbInMs > 1e-9 && mbOutMs > 1e-9) ? juce::jlimit (0.25, 4.0, std::sqrt (mbInMs / mbOutMs)) : 1.0;
+            mbAg += gA * (tg - mbAg);
+            for (int c = 0; c < nch; ++c) ch[c][i] = (float) (x[c] * mbAg);
         }
+        mbAutoDb.store ((float) (20.0 * std::log10 (mbAg)));
         for (int k = 0; k < 4; ++k) updateMin (mbGrAcc[(size_t) k], (float) mbComp.grMin[(size_t) k]);
     }
     {
@@ -883,7 +981,23 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         // FRESH AIR
         if (airOn) freshAir.process (x, nch, am1, ah);
 
-        // CLIPPER
+        // CLIPPER (M/S : le centre et les cotes sont clippes separement)
+        if (clipMS && nch == 2 && clipBand == 0)
+        {
+            const double l = dc1[0].process (x[0]) * cg, r = dc1[1].process (x[1]) * cg;
+            double M = 0.5 * (l + r), S = 0.5 * (l - r);
+            grPre = std::max (grPre, std::max (std::abs (l), std::abs (r)));
+            M = clipFn (M, clipShape);
+            S = clipFn (S, clipShape);
+            double o[2] = { M + S, M - S };
+            for (int c = 0; c < 2; ++c)
+            {
+                if (clipShape == 2) o[c] = dc2[(size_t) c].process (o[c]);
+                grPost = std::max (grPost, std::abs (o[c]));
+                u[c][i] = (float) o[c];
+            }
+            continue;
+        }
         for (int c = 0; c < nch; ++c)
         {
             double v = dc1[(size_t) c].process (x[c]);
@@ -934,8 +1048,20 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
 
         if (limOn)
         {
+            double pin = 0;
+            for (int c = 0; c < nch; ++c) pin = std::max (pin, std::abs (x[c]));
+            limViewPk = std::max (limViewPk, (float) (pin * limiter.gainLin));
             limiter.process (x, nch);
             limGrMin = std::min (limGrMin, limiter.lastGr);
+            limViewGrMin = std::min (limViewGrMin, (float) limiter.lastGr);
+            if (++limViewCount >= scopeSlice)
+            {
+                const int w = limViewWrite.load (std::memory_order_relaxed);
+                limViewIn[(size_t) w].store (limViewPk, std::memory_order_relaxed);
+                limViewGr[(size_t) w].store (20.f * std::log10 (std::max (limViewGrMin, 1e-6f)), std::memory_order_relaxed);
+                limViewWrite.store ((w + 1) % scopeSize, std::memory_order_release);
+                limViewPk = 0.f; limViewGrMin = 1.f; limViewCount = 0;
+            }
         }
         // plafond de securite (jamais au-dessus de 0 dBFS, ni du plafond du limiteur)
         const double lim = limOn ? ceilLin : 1.0;
@@ -990,6 +1116,8 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             peak = std::max (peak, std::abs (ch[c][i]));
             monoIn += d; monoOut += ch[c][i];
         }
+        stereoL[(size_t) sw] = ch[0][i];
+        stereoR[(size_t) sw] = nch > 1 ? ch[1][i] : ch[0][i];
         specIn[(size_t) sw] = (float) (monoIn / nch);
         specOut[(size_t) sw] = (float) (monoOut / nch);
         sw = (sw + 1) & (specSize - 1);
@@ -1018,6 +1146,25 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     }
 
     loudness.process (ch, nch, n);
+
+    // LUFS long terme : moyenne glissante sur 30 s (blocs de 100 ms, porte absolue -70 LUFS)
+    for (int i = 0; i < n; ++i)
+    {
+        double k = 0;
+        for (int c = 0; c < nch; ++c) { const double v = ltHp[(size_t) c].process (ltShelf[(size_t) c].process (ch[c][i])); k += v * v; }
+        if (nch == 1) k *= 2.0;
+        ltAcc += k;
+        if (++ltCount >= ltBlock)
+        {
+            const double blk = ltAcc / ltCount;
+            ltAcc = 0; ltCount = 0;
+            ltBlocks[(size_t) ltPos] = blk;
+            ltPos = (ltPos + 1) % (int) ltBlocks.size();
+            double sum = 0; int cnt = 0;
+            for (auto b : ltBlocks) if (b > 1.0e-7 * 1.17) { sum += b; ++cnt; }   // ~ -70 LUFS
+            longTermLufs.store (cnt > 0 ? (float) toLufs (sum / cnt) : -100.f);
+        }
+    }
 
     if (am == amRefining)
         analyzeOutput (ch, nch, n);
@@ -1509,17 +1656,21 @@ void RavennProcessor::resetAllParameters()
 }
 
 //==============================================================================
-void RavennProcessor::switchAB()
+void RavennProcessor::switchAB() { selectSlot ((abSlot + 1) % 4); }
+
+void RavennProcessor::selectSlot (int slot)
 {
+    slot = juce::jlimit (0, 3, slot);
+    if (slot == abSlot) return;
     abState[(size_t) abSlot] = apvts.copyState();
-    abSlot ^= 1;
+    abSlot = slot;
     if (abState[(size_t) abSlot].isValid())
         apvts.replaceState (abState[(size_t) abSlot].createCopy());
 }
 
 void RavennProcessor::copyToOtherSlot()
 {
-    abState[(size_t) (abSlot ^ 1)] = apvts.copyState();
+    abState[(size_t) ((abSlot + 1) % 4)] = apvts.copyState();
 }
 
 void RavennProcessor::getStateInformation (juce::MemoryBlock& destData)

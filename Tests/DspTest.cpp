@@ -108,6 +108,11 @@ int main()
                                     { "mbRatio1", 20 }, { "mbRatio2", 20 }, { "mbRatio3", 20 }, { "mbRatio4", 20 }, { "mbAtt2", 0.1f }, { "mbGain2", 12 } }, true },
         { "Multibande solo LOW",  { { "mbOn", 1 }, { "mbSolo1", 1 } }, true },
         { "EQ dynamique +-12",    { { "dynRange1", -12 }, { "dynThr1", -50 }, { "dynRange2", 12 }, { "dynThr2", -50 }, { "dynQ2", 8 } }, true },
+        { "Limiteur Stealth Harm 1", { { "limGain", 12 }, { "limStyle", 10 } }, true },
+        { "Limiteur Stealth Harm 2", { { "limGain", 12 }, { "limStyle", 11 } }, true },
+        { "Clip M/S + knee 100",  { { "clip", 12 }, { "clipMS", 1 }, { "clipShape", 1 }, { "clipKnee", 100 }, { "limOn", 0 } }, true },
+        { "Spectral + de-esser",  { { "stabilize", 100 }, { "specRes", 100 }, { "dsRange", 12 }, { "dsThr", -50 } }, true },
+        { "Low/High cut",         { { "lowCut", 120 }, { "highCut", 8000 } }, true },
         { "Tout a fond 1.2",      { { "in", 15 }, { "mouth", 100 }, { "mask", 100 }, { "satDrive1", 24 }, { "satDrive2", 24 },
                                     { "satDrive3", 24 }, { "charAmt", 100 }, { "airMid", 100 }, { "airHigh", 100 }, { "depth3d", 100 },
                                     { "space", 100 }, { "ott", 100 }, { "punch", 100 }, { "limGain", 24 }, { "os", 4 } }, true },
@@ -433,8 +438,69 @@ int main()
         for (int k = 1; k <= 4; ++k) setP (b, ("mbThr" + juce::String (k)).toRawUTF8(), 0);
         for (auto* q : { &a, &b }) { setP (*q, "noLatency", 1); setP (*q, "limOn", 0); }
         const auto ra = run (a, 48000.0, 512, 0.2f, 2.0, true), rb = run (b, 48000.0, 512, 0.2f, 2.0, true);
-        const float d = diffDb (rb.out, ra.out);
-        std::printf ("%-22s difference %.1f dB  %s\n", "Multibande neutre", d, check (d < -60.f));
+        // vrai arbre Linkwitz-Riley : meme spectre / meme niveau, seule la phase tourne
+        const float d = std::abs (ra.lufs - rb.lufs);
+        std::printf ("%-22s ecart de loudness %.3f dB  %s\n", "Multibande neutre", d, check (d < 0.05f));
+    }
+
+    // --- De-esser : reduit les sifflantes au-dessus de FREQ
+    {
+        RavennProcessor p;
+        setP (p, "dsRange", 10); setP (p, "dsThr", -45); setP (p, "dsFreq", 5000);
+        run (p, 48000.0, 512, 0.6f, 2.0);
+        const float gr = p.dsGrAcc.load();
+        std::printf ("%-22s reduction %.1f dB  %s\n", "De-esser", gr, check (gr < -2.f));
+    }
+
+    // --- Equilibreur spectral : rapproche l'equilibre par octave d'un bruit rose
+    {
+        auto octErr = [] (const std::vector<float>& inter)
+        {
+            static constexpr double fc[8] = { 63, 125, 250, 500, 1000, 2000, 4000, 8000 };
+            std::array<gdsp::BandFilter, 8> f;
+            for (int b = 0; b < 8; ++b) f[(size_t) b].set (48000.0, fc[b] / std::sqrt (2.0), fc[b] * std::sqrt (2.0));
+            std::array<double, 8> e {};
+            for (size_t i = inter.size() / 2; i + 1 < inter.size(); i += 2)
+            {
+                const double M = 0.5 * (inter[i] + inter[i + 1]);
+                for (int b = 0; b < 8; ++b) { const double v = f[(size_t) b].process (M); e[(size_t) b] += v * v; }
+            }
+            double mean = 0; for (auto v : e) mean += 10.0 * std::log10 (v + 1e-20); mean /= 8.0;
+            double err = 0; for (auto v : e) { const double d = 10.0 * std::log10 (v + 1e-20) - mean; err += d * d; }
+            return std::sqrt (err / 8.0);
+        };
+        RavennProcessor a, b;
+        for (auto* q : { &a, &b }) { setP (*q, "limOn", 0); setP (*q, "body", 0); setP (*q, "specTarget", 1); }
+        setP (b, "stabilize", 100); setP (b, "specSpeed", 80);
+        // bruit blanc (pente +3 dB/oct par rapport au rose) : l'equilibreur doit l'aplatir
+        auto runNoise = [] (RavennProcessor& p)
+        {
+            p.prepareToPlay (48000.0, 512);
+            juce::AudioBuffer<float> buf (2, 512); juce::MidiBuffer midi; juce::Random rng (3);
+            Result r { 0.f, true, 0.f, {} };
+            for (int k = 0; k < 1200; ++k)
+            {
+                for (int i = 0; i < 512; ++i) { const float v = (rng.nextFloat() * 2 - 1) * 0.1f; buf.setSample (0, i, v); buf.setSample (1, i, v); }
+                p.processBlock (buf, midi);
+                for (int i = 0; i < 512; ++i) for (int c = 0; c < 2; ++c) r.out.push_back (buf.getSample (c, i));
+            }
+            return r;
+        };
+        const auto ra = runNoise (a), rb = runNoise (b);
+        const double e0 = octErr (ra.out), e1 = octErr (rb.out);
+        std::printf ("%-22s ecart au rose %.2f dB -> %.2f dB, latence %d  %s\n", "Equilibreur spectral", e0, e1, b.getLatencySamples(),
+                     check (e1 < e0 * 0.5));
+    }
+
+    // --- Slots A/B/C/D
+    {
+        RavennProcessor p;
+        setP (p, "mouth", 10); p.selectSlot (1); setP (p, "mouth", 20); p.selectSlot (2); setP (p, "mouth", 30);
+        p.selectSlot (0);
+        const float a0 = p.apvts.getRawParameterValue ("mouth")->load();
+        p.selectSlot (2);
+        const float c0 = p.apvts.getRawParameterValue ("mouth")->load();
+        std::printf ("%-22s A=%.0f C=%.0f  %s\n", "Slots A/B/C/D", a0, c0, check (std::abs (a0 - 10.f) < 0.5f && std::abs (c0 - 30.f) < 0.5f));
     }
 
     // --- RESET : tout revient par defaut, UNDO annule, REDO refait
@@ -528,7 +594,7 @@ int main()
         setP (p, "depth", 20); setP (p, "analog", 25); setP (p, "width", 120); setP (p, "tilt", 1.5f);
         run (p, 48000.0, 512, 0.8f, 6.0);
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
-        for (int pg = 0; pg < 6; ++pg)
+        for (int pg = 0; pg < 7; ++pg)
         {
             if (auto* re = dynamic_cast<RavennEditor*> (ed.get())) re->setPage (pg);
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);

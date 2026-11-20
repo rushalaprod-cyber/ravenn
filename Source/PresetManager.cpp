@@ -46,6 +46,28 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
         { u8 ("Loud Club"),         { { "in", 3.0f }, { "clip", 5.0f }, { "clipShape", 1.0f }, { "limGain", 4.0f }, { "limStyle", 5.0f },
                                       { "punch", 20.0f }, { "mouth", 25.0f }, { "amTarget", 2.0f } } },
     };
+    factory.push_back ({ u8 ("Master Spectral"),  { { "stabilize", 40.0f }, { "specRes", 30.0f }, { "clip", 2.0f }, { "clipShape", 1.0f } } });
+    factory.push_back ({ u8 ("De-Ess Doux"),      { { "dsRange", 6.0f }, { "dsThr", -32.0f }, { "dsFreq", 6500.0f } } });
+    factory.push_back ({ u8 ("Multiband Glue"),   { { "mbOn", 1.0f }, { "mbAuto", 1.0f }, { "mbThr1", -24.0f }, { "mbThr2", -24.0f },
+                                                    { "mbThr3", -24.0f }, { "mbThr4", -26.0f }, { "mbRatio1", 2.0f }, { "mbRatio2", 2.0f },
+                                                    { "mbRatio3", 2.0f }, { "mbRatio4", 2.5f } } });
+    factory.push_back ({ u8 ("Stealth Chaud"),    { { "limGain", 5.0f }, { "limStyle", 10.0f }, { "limCeil", -0.5f } } });
+
+    // Categories (ordre d'affichage du menu)
+    auto cat = [] (const juce::String& n) -> juce::String
+    {
+        auto in = [&] (std::initializer_list<const char*> l) { for (auto* s : l) if (n == juce::String::fromUTF8 (s)) return true; return false; };
+        if (in ({ "Défaut" })) return "BASE";
+        if (in ({ "Master Fort", "Rap Master", "Streaming -14 Propre", "Loud Club", "Monster Brut", "Master Spectral", "Stealth Chaud" })) return "MASTER";
+        if (in ({ "Basses Profondes", "Punch Kick", "Gros Saucisson", "Clip Graves Seuls" })) return "BASSES & PUNCH";
+        if (in ({ "Analog Glue", "Grosse Bouche", "Saturation Chaude", "OTT Écrasé", "Clip Mids Seuls", "Aigus Domptés", "Multiband Glue" })) return juce::String::fromUTF8 ("COULEUR & DYNAMIQUE");
+        if (in ({ "Large & Aéré", "Side Explosif", "Air & Espace", "Large 3 Bandes" })) return juce::String::fromUTF8 ("STÉRÉO & ESPACE");
+        if (in ({ "Voix Devant", "Voix En Avant", "De-Ess Doux" })) return "VOIX";
+        if (in ({ "Bande Analogique", "Vinyle Lo-Fi" })) return "VINTAGE & LO-FI";
+        if (in ({ "Live Sans Latence" })) return "LIVE";
+        return "AUTRES";
+    };
+    for (auto& f : factory) f.category = cat (f.name);
     current = factory.front().name;
 }
 
@@ -84,6 +106,20 @@ juce::StringArray PresetManager::getFactoryNames() const
     juce::StringArray names;
     for (auto& f : factory) names.add (f.name);
     return names;
+}
+
+std::vector<std::pair<juce::String, juce::StringArray>> PresetManager::getFactoryByCategory() const
+{
+    static const char* order[] = { "BASE", "MASTER", "BASSES & PUNCH", "COULEUR & DYNAMIQUE", "STÉRÉO & ESPACE", "VOIX",
+                                    "VINTAGE & LO-FI", "LIVE", "AUTRES" };
+    std::vector<std::pair<juce::String, juce::StringArray>> out;
+    for (auto* o : order)
+    {
+        juce::StringArray names;
+        for (auto& f : factory) if (f.category == juce::String::fromUTF8 (o)) names.add (f.name);
+        if (! names.isEmpty()) out.push_back ({ juce::String::fromUTF8 (o), names });
+    }
+    return out;
 }
 
 juce::StringArray PresetManager::getUserNames() const

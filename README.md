@@ -32,6 +32,10 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **MULTIBAND** : compresseur 4 bandes (seuil, ratio, attaque, relâchement, gain, solo, bypass, 3 coupures réglables, knee, mix) + EQ dynamique 2 bandes flottantes (fréquence, Q, seuil, plage ±12 dB), dans l'esprit de Pro-MB et du C6 (conception originale).
 
+**SPECTRAL** : équilibreur de spectre STFT (~60 zones, cible Modern / Pink / Référence, Cut Only) et dompteur de résonances ; **DE-ESSER** à bande séparée (Freq, Threshold, Range, Listen). Multibande en vrai Linkwitz-Riley, coupures déplaçables à la souris sur le spectre, Auto Gain. Limiteur : modes Stealth Tight / Balanced / Harmonics 1 / Harmonics 2 et vue entrée + réduction. Clipper SOFT à genou réglable et mode M/S. Low / High Cut, filtres de la 3D et de Space, vectorscope stéréo, LUFS long terme (30 s), slots A/B/C/D, presets par catégorie.
+
+**AAX** : option de compilation -DRAVENN_AAX=ON -DAAX_SDK_PATH=... (SDK Avid requis, signature PACE pour Pro Tools).
+
 **RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
@@ -53,8 +57,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.4.1-windows-setup.exe`.
-- **macOS** : `ravenn-1.4.1-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-1.5.0-windows-setup.exe`.
+- **macOS** : `ravenn-1.5.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

@@ -4,6 +4,8 @@
 // sidechain voix, EQ de correspondance (reference).
 // Tout est original : aucun code de plugin tiers n'a ete lu ni copie.
 #include "DSP.h"
+#include <juce_dsp/juce_dsp.h>
+#include <memory>
 #include <vector>
 #include <cstdint>
 
@@ -26,7 +28,9 @@ inline void makeAllpass (Biquad& b, double fs, double f, double q) noexcept
 // depasse le plafond. Detection true peak par interpolation 4x (Hermite).
 struct Limiter
 {
-    enum Style { Transparent = 0, Punchy, Dynamic, Allround, Aggressive, Modern, Bus, Safe, Stealth, numStyles };
+    // Styles 8 a 11 : les 4 modes du Stealth Limiter (Tight, Balanced, Harmonics 1 lampe, Harmonics 2 transistor)
+    enum Style { Transparent = 0, Punchy, Dynamic, Allround, Aggressive, Modern, Bus, Safe,
+                 StealthTight, StealthBalanced, StealthHarm1, StealthHarm2, numStyles };
 
     struct Settings
     {
@@ -55,6 +59,7 @@ struct Limiter
     int D = 0;
     double gRel[2] { 1, 1 }, gSlow[2] { 1, 1 };
     double relC = 0, relSlowC = 0, ceil = 1, gainLin = 1, preclip = 0, tpMargin = 1;
+    int harm = 0;
     Settings cur;
     double lastGr = 1;
 
@@ -110,9 +115,11 @@ struct Limiter
         const int newD = newL > 0 ? tpD : 0;
         if (newD != D) { D = newD; L = -1; }
         double attack = std::min (s.attackMs, s.lookMs);
-        static constexpr double relMul[numStyles]  = { 1.4, 0.8, 0.5, 1.0, 0.35, 0.7, 2.0, 3.0, 1.0 };
-        static constexpr double atkMul[numStyles]  = { 1.0, 0.45, 0.8, 1.0, 0.3, 0.7, 1.0, 1.0, 0.6 };
-        static constexpr double clipAmt[numStyles] = { 0.0, 0.15, 0.0, 0.05, 0.4, 0.25, 0.0, 0.0, 0.6 };
+        static constexpr double relMul[numStyles]  = { 1.4, 0.8, 0.5, 1.0, 0.35, 0.7, 2.0, 3.0, 1.0, 1.7, 1.1, 1.1 };
+        static constexpr double atkMul[numStyles]  = { 1.0, 0.45, 0.8, 1.0, 0.3, 0.7, 1.0, 1.0, 0.6, 1.0, 0.7, 0.7 };
+        static constexpr double clipAmt[numStyles] = { 0.0, 0.15, 0.0, 0.05, 0.4, 0.25, 0.0, 0.0, 0.6, 0.35, 0.3, 0.3 };
+        static constexpr int harmType[numStyles]   = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2 };
+        harm = harmType[std::clamp (s.style, 0, numStyles - 1)];
         const int st = std::clamp (s.style, 0, numStyles - 1);
         attack *= atkMul[st];
         const int newA = std::clamp ((int) std::lround (attack * 0.001 * fs), 1, std::max (1, newL));
@@ -167,7 +174,11 @@ struct Limiter
         for (int c = 0; c < nch; ++c)
         {
             double v = x[c] * gainLin;
-            if (preclip > 0)   // "Stealth" : arrondit les pointes avant le limiteur
+            if (harm == 1)        // Harmonics 1 : couleur lampe (paires)
+                v = ceil * (std::tanh (v / ceil * 0.9 + 0.12 * (v / ceil) * (v / ceil) / (1.0 + (v / ceil) * (v / ceil))) / 0.9);
+            else if (harm == 2)   // Harmonics 2 : couleur transistor (impaires)
+                v = ceil * std::atan (v / ceil * 1.1) / std::atan (1.1);
+            if (preclip > 0)   // arrondit les pointes avant le limiteur
                 v += preclip * (softRef * shape::soft (v / softRef) - v);
             x[c] = v;
 
@@ -287,7 +298,14 @@ struct MultibandSat
             if (drive[b] <= 1.0001) { y += band[b]; continue; }
             const int st = std::clamp (style[b], 0, 6);
             // sortie / drive^0,75 : a peu pres le meme volume percu quand on pousse
-            const double s = satshape::apply (band[b] * drive[b], st) / (slope[st] * std::pow (drive[b], 0.75));
+            // les graves gardent plus de niveau (0,55 au lieu de 0,75) et recoivent des harmoniques
+            // paires : on les entend aussi sur de petites enceintes
+            double s = satshape::apply (band[b] * drive[b], st) / (slope[st] * std::pow (drive[b], b == 0 ? 0.55 : 0.75));
+            if (b == 0)
+            {
+                const double h = 1.0 - 1.0 / drive[b];
+                s += 0.9 * h * s * std::abs (s) + 0.25 * h * std::tanh (3.0 * s);
+            }
             y += band[b] + mix * (s - band[b]);
         }
         return dc[(size_t) c].process (y);
@@ -495,14 +513,23 @@ struct Depth3D
     void prepare (double sampleRate)
     {
         fs = sampleRate;
-        sideHP.highpass (fs, 250, 0.7);
-        midHP.highpass (fs, 800, 0.6);
+        sideHP.highpass (fs, std::max (40.0, cutF * 0.31), 0.7);
+        midHP.highpass (fs, cutF, 0.6);
         static constexpr double f[4]  = { 700, 1700, 3900, 8200 };
         static constexpr double f2[4] = { 2300, 4100, 6900, 11000 };
         for (int i = 0; i < 4; ++i) { makeAllpass (ap[(size_t) i], fs, f[i], 0.6); makeAllpass (ap2[(size_t) i], fs, f2[i], 0.5); }
         lastAmt = -1;
     }
     void reset() noexcept { sideHP.reset(); midHP.reset(); front.reset(); for (auto& a : ap) a.reset(); for (auto& a : ap2) a.reset(); }
+    double cutF = 800;
+    // filtre reglable : en dessous, la 3D ne touche a rien (graves solides)
+    void setFreq (double f) noexcept
+    {
+        if (f == cutF) return;
+        cutF = f;
+        midHP.highpass (fs, f, 0.6);
+        sideHP.highpass (fs, std::max (40.0, f * 0.31), 0.7);
+    }
 
     inline void process (double& M, double& S, double amt) noexcept
     {
@@ -706,7 +733,7 @@ struct SpaceVerb
         for (int i = 0; i < nL; ++i) line[(size_t) i].assign ((size_t) (0.06 * fs) + 4, 0.0);
         preLen = std::max (1, (int) (0.008 * fs));
         pre.assign ((size_t) preLen, 0.0);
-        inHP.highpass (fs, 220, 0.7);
+        inHP.highpass (fs, lowCut, 0.7);
         lastSize = -1;
         reset();
     }
@@ -716,6 +743,8 @@ struct SpaceVerb
         std::fill (pre.begin(), pre.end(), 0.0);
         lp.fill (0); pos.fill (0); prePos = 0; inHP.reset();
     }
+    double lowCut = 220;
+    void setLowCut (double f) noexcept { if (f != lowCut) { lowCut = f; inHP.highpass (fs, f, 0.7); } }
     void setSize (double size) noexcept
     {
         if (size == lastSize) return;
@@ -867,7 +896,11 @@ struct MultibandComp
         double knee = 6, mix = 1;
     };
 
-    std::array<std::array<LR4, 2>, 3> split;
+    // Vrai arbre Linkwitz-Riley 24 dB/oct : passe-bas + passe-haut a chaque coupure,
+    // et passe-tout de compensation sur les bandes basses : la somme est plate
+    // (a la phase pres), meme quand les bandes sont compressees differemment.
+    std::array<std::array<LR4, 2>, 3> lp, hp;
+    std::array<std::array<LR4, 2>, 3> apL, apH;      // passe-tout : [0] x2 sur LOW, [1] x3 sur LOW, [2] x3 sur LOW MID
     std::array<double, 3> xf {};
     std::array<double, nb> env {}, gDb {}, aC {}, rC {}, lastAtt {}, lastRel {};
     std::array<double, nb> grMin {};
@@ -883,7 +916,7 @@ struct MultibandComp
     }
     void reset() noexcept
     {
-        for (auto& s : split) for (auto& f : s) f.reset();
+        for (auto* arr : { &lp, &hp, &apL, &apH }) for (auto& s : *arr) for (auto& f : s) f.reset();
         env.fill (0); gDb.fill (0); grMin.fill (0);
     }
     void setXover (double a, double b, double c) noexcept
@@ -893,7 +926,11 @@ struct MultibandComp
             if (v[k] != xf[(size_t) k])
             {
                 xf[(size_t) k] = v[k];
-                for (auto& f : split[(size_t) k]) f.setLowpass (fs, v[k]);
+                for (auto& f : lp[(size_t) k]) f.setLowpass (fs, v[k]);
+                for (auto& f : hp[(size_t) k]) f.setHighpass (fs, v[k]);
+                // passe-tout : [0] a x2, [1] et [2] a x3
+                if (k == 1) { for (auto& f : apL[0]) f.setLowpass (fs, v[k]); for (auto& f : apH[0]) f.setHighpass (fs, v[k]); }
+                if (k == 2) for (int a = 1; a <= 2; ++a) { for (auto& f : apL[(size_t) a]) f.setLowpass (fs, v[k]); for (auto& f : apH[(size_t) a]) f.setHighpass (fs, v[k]); }
             }
     }
     void setTimes (const Settings& s) noexcept
@@ -918,11 +955,17 @@ struct MultibandComp
         double b[nb][2] {};
         for (int c = 0; c < nch; ++c)
         {
+            const auto C = (size_t) c;
             const double v = x[c];
-            const double l0 = split[0][(size_t) c].process (v), r0 = v - l0;
-            const double l1 = split[1][(size_t) c].process (r0), r1 = r0 - l1;
-            const double l2 = split[2][(size_t) c].process (r1);
-            b[0][c] = l0; b[1][c] = l1; b[2][c] = l2; b[3][c] = r1 - l2;
+            double low = lp[0][C].process (v);
+            const double h0 = hp[0][C].process (v);
+            double lmid = lp[1][C].process (h0);
+            const double h1 = hp[1][C].process (h0);
+            const double hmid = lp[2][C].process (h1), high = hp[2][C].process (h1);
+            low = apL[0][C].process (low) + apH[0][C].process (low);
+            low = apL[1][C].process (low) + apH[1][C].process (low);
+            lmid = apL[2][C].process (lmid) + apH[2][C].process (lmid);
+            b[0][c] = low; b[1][c] = lmid; b[2][c] = hmid; b[3][c] = high;
         }
         bool anySolo = false;
         for (int k = 0; k < nb; ++k) anySolo = anySolo || s.solo[k];
@@ -1018,6 +1061,194 @@ struct DynEQ
                 }
             }
             for (int c = 0; c < nch; ++c) x[c] = B.pk[(size_t) c].process (x[c]);
+        }
+    }
+};
+
+//==============================================================================
+// DE-ESSER a bande separee : au-dessus de FREQ, la bande est reduite quand elle
+// depasse le seuil (jusqu'a RANGE dB). LISTEN = n'ecouter que ce qui est retire.
+struct DeEsser
+{
+    std::array<LR4, 2> lp, hp;
+    double fs = 0, f = 0, env = 0, g = 1, aC = 0, rC = 0, gS = 0, lastGrDb = 0;
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate; f = 0;
+        aC = 1.0 - std::exp (-1.0 / (0.0007 * fs));
+        rC = 1.0 - std::exp (-1.0 / (0.06 * fs));
+        gS = 1.0 - std::exp (-1.0 / (0.0008 * fs));
+        reset();
+    }
+    void reset() noexcept { for (auto* a : { &lp, &hp }) for (auto& x : *a) x.reset(); env = 0; g = 1; }
+    void setFreq (double freq) noexcept
+    {
+        if (freq == f) return;
+        f = freq;
+        for (auto& x : lp) x.setLowpass (fs, f);
+        for (auto& x : hp) x.setHighpass (fs, f);
+    }
+    inline void process (double* x, int nch, double thrDb, double rangeDb, bool listen) noexcept
+    {
+        double lo[2] {}, hi[2] {}, det = 0;
+        for (int c = 0; c < nch; ++c)
+        {
+            lo[c] = lp[(size_t) c].process (x[c]);
+            hi[c] = hp[(size_t) c].process (x[c]);
+            det = std::max (det, std::abs (hi[c]));
+        }
+        env += (det > env ? aC : rC) * (det - env);
+        const double L = 20.0 * std::log10 (env + 1e-9);
+        const double grDb = -std::min (rangeDb, std::max (0.0, (L - thrDb) * 0.75));
+        g += gS * (std::pow (10.0, grDb / 20.0) - g);
+        lastGrDb = grDb;
+        for (int c = 0; c < nch; ++c)
+            x[c] = listen ? hi[c] * (1.0 - g) : lo[c] + hi[c] * g;
+    }
+};
+
+//==============================================================================
+// MOTEUR SPECTRAL (STFT) : equilibreur de spectre et dompteur de resonances.
+//  - BALANCE : ramene l'equilibre (lisse sur 1 octave) vers la courbe cible ;
+//  - RESONANCE : repere les pics etroits (1/24 oct) qui depassent leur
+//    voisinage (1/3 oct) et les creuse ;
+//  - precision ~1/6 d'octave (une soixantaine de zones sur le spectre audible).
+// Les gains sont calcules sur la somme L+R et appliques aux deux canaux
+// (l'image stereo ne bouge pas). Latence : une taille de FFT.
+struct SpectralEngine
+{
+    int order = 11, N = 2048, hop = 512;
+    std::unique_ptr<juce::dsp::FFT> fft;
+    std::vector<float> win, inBuf[2], outBuf[2], frame[2];
+    std::vector<double> powS, gainDb, logF, dbNow, cumDb;
+    int inPos = 0, outPos = 0, hopCount = 0;
+    double fs = 48000;
+    bool cutOnly = false;
+
+    static int latencyFor (double fs) { return 1 << (fs <= 50000 ? 11 : (fs <= 100000 ? 12 : 13)); }
+
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        N = latencyFor (fs); order = (int) std::lround (std::log2 ((double) N)); hop = N / 4;
+        fft = std::make_unique<juce::dsp::FFT> (order);
+        win.resize ((size_t) N);
+        for (int i = 0; i < N; ++i) win[(size_t) i] = (float) std::sqrt (0.5 - 0.5 * std::cos (2 * pi * i / N));
+        for (int c = 0; c < 2; ++c)
+        {
+            inBuf[c].assign ((size_t) N, 0.f); outBuf[c].assign ((size_t) N * 2, 0.f); frame[c].assign ((size_t) N * 2, 0.f);
+        }
+        const int nb = N / 2 + 1;
+        powS.assign ((size_t) nb, 1e-12); gainDb.assign ((size_t) nb, 0.0); dbNow.assign ((size_t) nb, -120.0);
+        cumDb.assign ((size_t) nb + 1, 0.0); logF.resize ((size_t) nb);
+        for (int k = 0; k < nb; ++k) logF[(size_t) k] = std::log2 (std::max (1.0, k * fs / N));
+        inPos = outPos = hopCount = 0;
+    }
+    void reset() noexcept
+    {
+        for (int c = 0; c < 2; ++c) { std::fill (inBuf[c].begin(), inBuf[c].end(), 0.f); std::fill (outBuf[c].begin(), outBuf[c].end(), 0.f); }
+        std::fill (powS.begin(), powS.end(), 1e-12); std::fill (gainDb.begin(), gainDb.end(), 0.0);
+        inPos = outPos = hopCount = 0;
+    }
+
+    // moyenne en dB sur +-halfOct octave autour du bin k (sommes cumulees)
+    inline double smoothAt (int k, double halfOct) const noexcept
+    {
+        const int nb = (int) dbNow.size();
+        const double f = std::max (1.0, k * fs / N);
+        const int a = std::clamp ((int) (f * std::pow (2.0, -halfOct) * N / fs), 1, nb - 1);
+        const int b = std::clamp ((int) (f * std::pow (2.0, halfOct) * N / fs) + 1, a + 1, nb);
+        return (cumDb[(size_t) b] - cumDb[(size_t) a]) / (double) (b - a);
+    }
+
+    // target(log2 f) -> dB relatifs ; balance / resonance 0..1 ; speed 0..1
+    template <typename TargetFn>
+    void analyse (double balance, double resonance, double speed, TargetFn target)
+    {
+        const int nb = N / 2 + 1;
+        auto* L = frame[0].data(); auto* R = frame[1].data();
+        const double tSm = 0.05 + 0.6 * (1.0 - speed);            // lissage temporel du spectre
+        for (int k = 0; k < nb; ++k)
+        {
+            const double pL = (double) L[2 * k] * L[2 * k] + (double) L[2 * k + 1] * L[2 * k + 1];
+            const double pR = (double) R[2 * k] * R[2 * k] + (double) R[2 * k + 1] * R[2 * k + 1];
+            const double pw = 0.5 * (pL + pR) + 1e-14;
+            powS[(size_t) k] += (1.0 - tSm) * (pw - powS[(size_t) k]);
+            dbNow[(size_t) k] = 10.0 * std::log10 (powS[(size_t) k]);
+        }
+        cumDb[0] = 0;
+        for (int k = 0; k < nb; ++k) cumDb[(size_t) k + 1] = cumDb[(size_t) k] + dbNow[(size_t) k];
+
+        // decalage pour caler la cible sur le niveau du morceau (100 Hz - 10 kHz)
+        double off = 0; int cnt = 0;
+        if (balance > 0)
+            for (int k = 1; k < nb; ++k)
+            {
+                const double f = k * fs / N;
+                if (f < 100 || f > 10000) continue;
+                off += smoothAt (k, 0.5) - target (logF[(size_t) k]); ++cnt;
+            }
+        if (cnt > 0) off /= cnt;
+
+        const double att = 0.35 + 0.4 * speed, rel = 0.06 + 0.25 * speed;
+        for (int k = 1; k < nb; ++k)
+        {
+            const double f = k * fs / N;
+            double g = 0;
+            if (f > 25 && f < 18000)
+            {
+                if (balance > 0)
+                {
+                    const double dev = target (logF[(size_t) k]) + off - smoothAt (k, 0.5);
+                    g += std::clamp (dev * 0.85, -9.0, cutOnly ? 0.0 : 9.0) * balance;
+                }
+                if (resonance > 0 && f > 80)
+                {
+                    const double ex = smoothAt (k, 1.0 / 48.0) - smoothAt (k, 1.0 / 6.0) - 3.0;
+                    if (ex > 0) g -= std::min (9.0, ex * 1.2) * resonance;
+                }
+            }
+            auto& gd = gainDb[(size_t) k];
+            gd += (g < gd ? att : rel) * (g - gd);
+        }
+        // lissage en frequence du gain (~1/6 oct) pour eviter tout artefact
+        for (int k = 0; k < nb; ++k) dbNow[(size_t) k] = gainDb[(size_t) k];
+        cumDb[0] = 0;
+        for (int k = 0; k < nb; ++k) cumDb[(size_t) k + 1] = cumDb[(size_t) k] + dbNow[(size_t) k];
+        for (int k = 1; k < nb; ++k)
+        {
+            const double gl = std::pow (10.0, smoothAt (k, 1.0 / 12.0) / 20.0);
+            for (int c = 0; c < 2; ++c) { frame[c][(size_t) (2 * k)] *= (float) gl; frame[c][(size_t) (2 * k + 1)] *= (float) gl; }
+        }
+    }
+
+    template <typename TargetFn>
+    inline void process (double* x, int nch, double balance, double resonance, double speed, TargetFn target)
+    {
+        for (int c = 0; c < 2; ++c) inBuf[c][(size_t) inPos] = (float) (c < nch ? x[c] : x[0]);
+        for (int c = 0; c < nch; ++c) x[c] = outBuf[c][(size_t) outPos];
+        for (int c = 0; c < 2; ++c) outBuf[c][(size_t) outPos] = 0.f;
+        inPos = (inPos + 1) % N;
+        outPos = (outPos + 1) % N;
+        if (++hopCount < hop) return;
+        hopCount = 0;
+
+        for (int c = 0; c < 2; ++c)
+        {
+            auto& fr = frame[c];
+            for (int i = 0; i < N; ++i) fr[(size_t) i] = inBuf[c][(size_t) ((inPos + i) % N)] * win[(size_t) i];
+            std::fill (fr.begin() + N, fr.end(), 0.f);
+            fft->performRealOnlyForwardTransform (fr.data(), true);
+        }
+        analyse (balance, resonance, speed, target);
+        for (int c = 0; c < 2; ++c)
+        {
+            auto& fr = frame[c];
+            fft->performRealOnlyInverseTransform (fr.data());
+            // racine de Hann en analyse et en synthese (= Hann), recouvrement 75 % : somme = 2
+            for (int i = 0; i < N; ++i)
+                outBuf[c][(size_t) ((outPos + i) % N)] += fr[(size_t) i] * win[(size_t) i] * 0.5f;
         }
     }
 };
