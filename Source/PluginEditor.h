@@ -49,6 +49,18 @@ namespace ui
     void applyTheme();                // applique appearance.theme / accent aux couleurs ui::
     void loadAppearance();
     void saveAppearance();
+
+    // ---- 2.0 : matieres titane / obsidienne
+    void drawMetalPanel (juce::Graphics&, juce::Rectangle<float>, juce::Colour accent, float s);
+    void drawChassis (juce::Graphics&, juce::Rectangle<float>);
+    void drawTitaniumKnob (juce::Graphics&, juce::Rectangle<float> bounds, float pos, float zeroPos, float startAngle, float endAngle,
+                           juce::Colour fill, const juce::String& valueText);
+}
+class RavennLookAndFeel;
+namespace ui
+{
+    void setActiveLnf (RavennLookAndFeel*);
+    juce::Image cachedTexture (const juce::String& key, std::function<juce::Image()> make);
 }
 
 //==============================================================================
@@ -56,7 +68,10 @@ class RavennLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     RavennLookAndFeel();
+    ~RavennLookAndFeel() override { textureCache.clear(); ui::setActiveLnf (nullptr); }
+    std::map<juce::String, juce::Image> textureCache;   // textures metal (vit avec l'editeur)
     void applyColours();
+    void drawCornerResizer (juce::Graphics&, int w, int h, bool isMouseOver, bool isMouseDragging) override;
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool hover, bool down) override;
@@ -266,6 +281,7 @@ class MultibandPage : public juce::Component, private juce::Timer
 public:
     explicit MultibandPage (RavennProcessor& p);
     Segmented slope;   // pente des crossovers
+    juce::Rectangle<int> autoSlot;   // place du bouton AUTO (pose par l'editeur)
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -563,6 +579,10 @@ private:
     void showAppearanceMenu();
     void applyAppearance();
     int lastWidthMode = -1, lastMbLearn = -1;
+
+    // ---- 2.0 : rack analogique 3 slots
+    ChoiceBox charType2b, charType3b;
+    NeonKnob charAmt2k, charAmt3k;
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;

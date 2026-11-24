@@ -103,3 +103,72 @@ struct BandMeter4
 };
 
 } // namespace gdsp
+
+namespace gdsp
+{
+//==============================================================================
+// DECORRELATEUR (dispersion de phase) : cascade de passe-tout du 2e ordre a des
+// frequences differentes. Ajoute au Side, une copie decorrelee du Mid elargit
+// vraiment l'image (la correlation inter-canaux baisse) et s'ANNULE en mono :
+// L = M + S + k*D, R = M - S - k*D  ->  L + R = 2M.
+struct Decorrelator
+{
+    std::array<Biquad, 5> ap;
+    Biquad hp;           // pas de decorrelation dans le grave (le grave reste au centre)
+    double fs = 0;
+    void prepare (double sampleRate, double fromHz)
+    {
+        fs = sampleRate;
+        static constexpr double f[5] = { 420.0, 980.0, 2300.0, 5200.0, 11000.0 };
+        for (int i = 0; i < 5; ++i) allpass (ap[(size_t) i], fs, f[i], 0.6);
+        hp.highpass (fs, fromHz, 0.6);
+        reset();
+    }
+    static void allpass (Biquad& b, double fs, double f, double q)
+    {
+        const double w = 2 * pi * Biquad::clampF (fs, f) / fs, c = std::cos (w), al = std::sin (w) / (2 * q);
+        b.set (1 - al, -2 * c, 1 + al, 1 + al, -2 * c, 1 - al);
+    }
+    void reset() noexcept { for (auto& b : ap) b.reset(); hp.reset(); }
+    inline double process (double m) noexcept
+    {
+        double x = hp.process (m);
+        for (auto& b : ap) x = b.process (x);
+        return x;
+    }
+};
+
+//==============================================================================
+// WIDTH 2 : largeur percue, pas seulement un gain de Side.
+//  > 100 % : gain de Side modere + copie decorrelee du Mid (au-dessus de ~350 Hz)
+//            + "shuffling" de Gerzon (le Side grave 150-700 Hz legerement remonte)
+//  < 100 % : on resserre simplement le Side.
+// Mono : la part decorrelee s'annule, la somme L+R est intacte.
+struct WidthPro
+{
+    Decorrelator dec;
+    Biquad shuffle;
+    double fs = 0, lastW = -1;
+    void prepare (double sampleRate)
+    {
+        fs = sampleRate;
+        dec.prepare (fs, 350.0);
+        shuffle.peak (fs, 380.0, 0.5, 0.0);
+        lastW = -1;
+    }
+    void reset() noexcept { dec.reset(); shuffle.reset(); }
+    // w : largeur (1 = neutre, 2 = 200 %) ; protect : 0..1, reduit la part decorrelee si le Side est deja fort
+    inline void process (double& M, double& S, double w) noexcept
+    {
+        if (w != lastW)
+        {
+            lastW = w;
+            shuffle.peak (fs, 380.0, 0.5, w > 1.0 ? (w - 1.0) * 3.0 : 0.0);   // jusqu'a +3 dB a 200 %
+        }
+        if (w <= 1.0) { S *= w; return; }
+        const double e = w - 1.0;                          // 0..1
+        const double d = dec.process (M);
+        S = shuffle.process (S) * (1.0 + 0.5 * e) + 0.62 * e * d;
+    }
+};
+} // namespace gdsp

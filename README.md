@@ -44,6 +44,8 @@ ce que ravenn ajoute (grain, harmoniques, air) ou retire (pics). Le spectre affi
 
 **1.9** : Bass Depth refait sans résonance (harmoniques 2-3 à niveau contrôlé, renfort de sub large et dynamique), clipper façon ASH (Mid-Side en %, knee, post-clip), WIDTH global OU 3 bandes, fusions (VOICE, AIR, PUNCH/KICK, ANALOG dans CHARACTER), reset par partie, auto multibande, potards précis (Ctrl/Shift + glisser, clic droit = valeur), fader OUTPUT, spectre dans VOICE, glue à 0 par défaut, presets au format .rvn, menu APPARENCE (6 thèmes, accent, fond, potards, taille, onglets).
 
+**2.0** : design Nocturne Titanium (titane brossé texturé, panneaux obsidienne, potards à LED segmentées), WIDTH et WINGS avec vraie décorrélation (compatible mono), auto master revu (courbe cible par genre, -1 dBTP streaming, limiteur ≤ 5 dB), rack analogique 3 slots, TALON / WINGS.
+
 **RESET** (tous les paramètres, annulable), **UNDO / REDO** (100 étapes minimum), A/B, presets (dossier ouvrable, import de fichiers `.preset`).
 
 ### Mouth, Mask, Body
@@ -65,8 +67,8 @@ LUFS M / S / I, True Peak, barres In / Out / Clip / Lim, oscilloscope du clipper
 sortie / référence avec échelle en dB qui suit le niveau.
 
 ## Installer
-- **Windows** : `ravenn-1.9.0-windows-setup.exe`.
-- **macOS** : `ravenn-1.9.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
+- **Windows** : `ravenn-2.0.0-windows-setup.exe`.
+- **macOS** : `ravenn-2.0.0-macos.pkg` (non signé par Apple : *Réglages Système › Confidentialité et
   sécurité › Ouvrir quand même*).
 
 Le sidechain voix : dans le DAW, active l'entrée sidechain de ravenn sur la piste prod et envoie-y la voix.

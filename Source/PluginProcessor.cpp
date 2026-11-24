@@ -249,6 +249,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout RavennProcessor::createLayou
     dB  ("postClip", "Post Clip", -12.f, 12.f, 0.f);
     choice ("widthMode", "Width Mode", { "GLOBAL", "3 BANDS" }, 0);
     choice ("punchMode", "Punch Mode", { "ALL", "KICK" }, 0);
+    // 2.0 : rack analogique, 2 slots de plus en serie apres CHARACTER
+    for (int s = 2; s <= 3; ++s)
+    {
+        choice (s == 2 ? "charType2" : "charType3", s == 2 ? "Character 2" : "Character 3",
+                { "OFF", "TAPE 15 IPS", "TAPE 30 IPS", "CASSETTE", "TUBE CONSOLE", "CLASS-A CONSOLE", "TRANSFORMER", "VINYL", "ANALOG" }, 0);
+        pct (s == 2 ? "charAmt2" : "charAmt3", s == 2 ? "Character 2 Amount" : "Character 3 Amount", 100.f, 30.f);
+    }
     toggle ("dsOn", "De-esser", true);
     hz  ("imgX1", "Width Low/Mid",  60.f, 1000.f, 250.f, 250.f);
     hz  ("imgX2", "Width Mid/High", 1000.f, 12000.f, 4000.f, 4000.f);
@@ -376,7 +383,7 @@ RavennProcessor::RavennProcessor()
     p.depth3dHi = get ("depth3dHi"); p.depth3dQ = get ("depth3dQ");
     p.glueOn = get ("glueOn"); p.glueThr = get ("glueThr"); p.glueRatio = get ("glueRatio"); p.glueAtt = get ("glueAtt");
     p.glueRel = get ("glueRel"); p.glueMakeup = get ("glueMakeup"); p.glueMix = get ("glueMix"); p.glueHpf = get ("glueHpf");
-    p.kick = get ("kick"); p.clipMSAmt = get ("clipMSAmt"); p.postClip = get ("postClip"); p.widthMode = get ("widthMode"); p.punchMode = get ("punchMode"); p.glueAuto = get ("glueAuto"); p.dsOn = get ("dsOn"); p.imgX1 = get ("imgX1"); p.imgX2 = get ("imgX2");
+    p.kick = get ("kick"); p.charType2 = get ("charType2"); p.charAmt2 = get ("charAmt2"); p.charType3 = get ("charType3"); p.charAmt3 = get ("charAmt3"); p.clipMSAmt = get ("clipMSAmt"); p.postClip = get ("postClip"); p.widthMode = get ("widthMode"); p.punchMode = get ("punchMode"); p.glueAuto = get ("glueAuto"); p.dsOn = get ("dsOn"); p.imgX1 = get ("imgX1"); p.imgX2 = get ("imgX2");
     p.mbSlope = get ("mbSlope"); p.satSlope = get ("satSlope"); p.clipSlope = get ("clipSlope"); p.imgSlope = get ("imgSlope");
     for (int i = 0; i < clipWavSize; ++i)
     {
@@ -680,7 +687,9 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     // 1.9 : ANALOG est devenu un modele de CHARACTER (l'ancien potard reste compatible)
     const bool charIsAnalog = (int) p.charType->load() == 7;
     const double depth = p.depth->load() * 0.01;
-    const double analog = juce::jmax ((double) p.analog->load(), charIsAnalog ? (double) p.charAmt->load() : 0.0) * 0.01;
+    const int ct2 = juce::jlimit (0, 8, (int) p.charType2->load()), ct3 = juce::jlimit (0, 8, (int) p.charType3->load());
+    const double analog = std::max ({ (double) p.analog->load(), charIsAnalog ? (double) p.charAmt->load() : 0.0,
+                                      ct2 == 8 ? (double) p.charAmt2->load() : 0.0, ct3 == 8 ? (double) p.charAmt3->load() : 0.0 }) * 0.01;
     // WIDTH : soit global, soit 3 bandes (un seul systeme a la fois)
     const bool widthBands = p.widthMode->load() > 0.5f;
     const double width = widthBands ? 1.0 : p.width->load() * 0.01, mix = p.mix->load() * 0.01;
@@ -766,9 +775,18 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
     if (osRate != freshAir.fs) freshAir.prepare (osRate);
     if (osRate != fattener.fs) fattener.prepare (osRate);
     if (osRate != bassDepth.fs) bassDepth.prepare (osRate);
+    if (osRate != wingsDec.fs) wingsDec.prepare (osRate, 60.0);
+    if (baseRate != widthPro.fs) { widthPro.prepare (baseRate); bandDec.prepare (baseRate, 350.0); }
     fattener.set (fatAmt, p.fatColor->load() * 0.01);
     imager.set (baseRate, p.imgX1->load(), juce::jmax (p.imgX2->load(), p.imgX1->load() * 1.5f), juce::jlimit (0, 2, (int) p.imgSlope->load()));
     character.set (osRate, charType, charAmt);
+    // slots 2 et 3 : chaque machine colore la suivante, a dose reduite (stacking leger)
+    const bool rack2 = ct2 >= 1 && ct2 <= 7 && p.charAmt2->load() > 0.f, rack3 = ct3 >= 1 && ct3 <= 7 && p.charAmt3->load() > 0.f;
+    if (rack2) character2.set (osRate, ct2 - 1, p.charAmt2->load() * 0.01 * 0.8);
+    if (rack3) character3.set (osRate, ct3 - 1, p.charAmt3->load() * 0.01 * 0.7);
+    if (rack2 && ! rack2WasOn) character2.reset();
+    if (rack3 && ! rack3WasOn) character3.reset();
+    rack2WasOn = rack2; rack3WasOn = rack3;
 
     depthLP.setLowpass (osRate, 110.0);
     depthHarmLP.lowpass (osRate, 320.0, 0.707);
@@ -907,8 +925,14 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
         if (nch == 2)
         {
             double M = (ch[0][i] + ch[1][i]) * 0.5;
-            double S = (ch[0][i] - ch[1][i]) * 0.5 * wd;
-            if (imgOn) S = imager.process (S, imgW);
+            double S = (ch[0][i] - ch[1][i]) * 0.5;
+            if (widthBands)
+            {
+                if (imgOn) S = imager.process (S, imgW);
+                const double ex = 0.5 * (juce::jmax (0.0, imgW[1] - 1.0) + juce::jmax (0.0, imgW[2] - 1.0));
+                if (ex > 0.0) S += 0.62 * ex * bandDec.process (M);
+            }
+            else widthPro.process (M, S, wd);
             const double hp = sideHP.process (S);
             if (monoBass) S = hp;
             if (voiceOn) M = voicePeak.process (M);
@@ -1137,7 +1161,15 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             // THE MASK (cale sur MONSTER) : Side seul, saturation impaire + gain
             double rest = 0;
             const double b = maskF.process (S, rest, M);
-            S = rest + (ma > 0.0 ? maskOpen.process (b, M, ma) : b);
+            if (ma > 0.0)
+            {
+                // WINGS : ouverture du Side + copie decorrelee du centre de la bande (vraie largeur,
+                // s'annule en mono), dosee par le demasquage et la place restante sous la garde mono
+                const double open = maskOpen.process (b, M, ma);
+                const double dk = ma * (0.25 + 0.45 * maskOpen.lastDensity) * maskOpen.lastRoom * maskOpen.lastPresence;
+                S = rest + open + dk * wingsDec.process (maskOpen.lastMb);
+            }
+            else S = rest + b;
             M = applyDepth (M, de);
             x[0] = M + S;
             x[1] = M - S;
@@ -1164,6 +1196,8 @@ void RavennProcessor::processChunk (float* const* ch, const float* const* sc, in
             character.amt = chA;
             for (int c = 0; c < nch; ++c) x[c] = character.process (c, x[c]);
         }
+        if (rack2) for (int c = 0; c < nch; ++c) x[c] = character2.process (c, x[c]);
+        if (rack3) for (int c = 0; c < nch; ++c) x[c] = character3.process (c, x[c]);
 
         // ANALOG : transfo, aigus adoucis, saturation douce, crosstalk. Sans bruit.
         for (int c = 0; c < nch; ++c)
@@ -1764,7 +1798,21 @@ void RavennProcessor::applyAutoMaster()
     }
 
     // equilibre spectral, resonances, sub, air
-    const float balance = useRef ? 0.f : (float) juce::jlimit (0.0, 45.0, (devRms - 1.5) * 10.0);
+    // courbe cible : celle des courbes de genre la plus proche du morceau (a la maniere d'Ozone,
+    // qui melange des profils de genre plutot que d'imposer une seule cible)
+    int bestCurve = 0; double bestDist = 1e9;
+    for (int ci : { 0, 3, 4, 5, 6, 7, 8, 9 })
+    {
+        double tot = 0; for (int b = 0; b < nOct; ++b) tot += std::pow (10.0, targetCurves[ci][b] / 10.0);
+        double d2 = 0, mean = 0;
+        double dd[nOct];
+        for (int b = 1; b < nOct - 1; ++b) { dd[b] = octRel (b) - (targetCurves[ci][b] - 10.0 * std::log10 (tot)); mean += dd[b]; }
+        mean /= (nOct - 2);
+        for (int b = 1; b < nOct - 1; ++b) d2 += (dd[b] - mean) * (dd[b] - mean);
+        const double dist = std::sqrt (d2 / (nOct - 2));
+        if (dist < bestDist) { bestDist = dist; bestCurve = ci; }
+    }
+    const float balance = useRef ? 0.f : (float) juce::jlimit (0.0, 45.0, (juce::jmin (devRms, bestDist) - 1.5) * 10.0);
     if (balance > 0) notes.add ("balance " + juce::String ((int) balance) + " %");
     const float resonance = loud ? 12.f : 0.f;
     const float lowCutHz = subExcess > 4.0 ? 28.f : 10.f;
@@ -1805,14 +1853,19 @@ void RavennProcessor::applyAutoMaster()
     //  2) puis un peu de clipper (transparent jusqu'a ~2,5 dB)
     //  3) puis un peu de limiteur (~3,5 dB)
     //  4) au-dela, on partage entre les deux : aucun etage ne travaille seul tres fort
-    const double ceilDb = amTargetLufs <= -20.f ? -1.0 : -0.1;
+    // plafond : -1 dBTP pour le streaming (les codecs ajoutent jusqu'a ~3 dB de cretes),
+    // -0,1 dB pour les cibles fortes (club, loud) ou le maximum compte
+    const double ceilDb = amTargetLufs <= -13.f ? -1.0 : -0.1;
     const double G = amTargetLufs - amInLufs + 0.5;
     const double head = std::max (0.0, ceilDb - 0.3 - peakDb);
     const double inG = G < 0.0 ? G : std::min (G, head);
     double R = std::max (0.0, G - inG);
     double clipG = std::min (R, 2.5); R -= clipG;
     double limG = std::min (R, 3.5);  R -= limG;
-    clipG += 0.5 * R; limG += 0.5 * R;
+    // au-dela : 60 % clipper (transparent sur les pics courts), 40 % limiteur, limiteur plafonne
+    // a ~5 dB de reduction (au-dela il ternit les attaques), le reste au clipper
+    clipG += 0.6 * R; limG += 0.4 * R;
+    if (limG > 5.0) { clipG += limG - 5.0; limG = 5.0; }
     float in = (float) juce::jlimit (-15.0, 15.0, inG);
     float clip = (float) juce::jlimit (-15.0, 15.0, clipG);
     float limGainV = (float) juce::jlimit (0.0, 24.0, limG + std::max (0.0, clipG - 15.0));
@@ -1833,7 +1886,7 @@ void RavennProcessor::applyAutoMaster()
     set ("width", width); set ("monoBass", monoBass ? 1.f : 0.f); set ("monoFreq", 120.f);
     set ("depth3d", d3); set ("depth3dFreq", 1500.f);
     set ("refMatch", useRef ? 100.f : 0.f);
-    set ("stabilize", balance); set ("specTarget", 0.f); set ("specRes", resonance);
+    set ("stabilize", balance); set ("specTarget", (float) bestCurve); set ("specRes", resonance);
     set ("lowCut", lowCutHz); set ("airHigh", highAir);
     set ("dsAuto", deEss ? 1.f : 0.f); set ("dsRange", deEss ? 5.f : 0.f); set ("dsFreq", 6500.f);
     set ("mbOn", mbOn ? 1.f : 0.f); set ("mbAuto", 1.f);
@@ -1875,7 +1928,7 @@ void RavennProcessor::refineAutoMaster()
     }
     double newClip = clip + dClip, newLim = lg + dLim;
     bool maxed = false;
-    if (newLim > 24.0) { newClip += newLim - 24.0; newLim = 24.0; }
+    if (newLim > 6.0) { newClip += newLim - 6.0; newLim = 6.0; }   // le limiteur ne travaille jamais tres fort
     if (newClip > 15.0)
     {
         const float newIn = (float) juce::jlimit (-15.0, 15.0, in + (newClip - 15.0));

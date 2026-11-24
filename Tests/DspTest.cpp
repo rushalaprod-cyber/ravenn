@@ -763,6 +763,25 @@ int main()
         std::printf ("%-22s ecarts %.1f / %.1f dB  %s\n", "Width un seul mode", da, db, check (da < -80.f && db < -80.f));
     }
 
+    // --- 2.0 : WIDTH 200 % elargit vraiment (correlation plus basse) et la somme mono ne bouge pas
+    {
+        RavennProcessor a, b; setP (b, "width", 200.f);
+        for (auto* q : { &a, &b }) { setP (*q, "limOn", 0); }
+        const auto ra = run (a, 48000.0, 512, 0.2f, 3.0, true), rb = run (b, 48000.0, 512, 0.2f, 3.0, true);
+        auto corr = [] (const std::vector<float>& o)
+        {
+            double lr = 0, ll = 0, rr = 0;
+            for (size_t i = 48000; i + 1 < o.size(); i += 2) { lr += o[i] * o[i + 1]; ll += o[i] * o[i]; rr += o[i + 1] * o[i + 1]; }
+            return lr / std::sqrt (ll * rr + 1e-20);
+        };
+        std::vector<float> ma, mb;
+        for (size_t i = 48000; i + 1 < ra.out.size(); i += 2) { ma.push_back (ra.out[i] + ra.out[i + 1]); mb.push_back (rb.out[i] + rb.out[i + 1]); }
+        const double ca = corr (ra.out), cb = corr (rb.out);
+        const float monoDiff = diffDb (ma, mb);
+        std::printf ("Width 200 %%           correlation %.2f -> %.2f, somme mono %.1f dB  %s\n", ca, cb, monoDiff,
+                     check (cb < ca - 0.1 && monoDiff < -40.f));
+    }
+
     // --- Gros bloc
     {
         RavennProcessor p;

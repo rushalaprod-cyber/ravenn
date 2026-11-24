@@ -6,7 +6,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
 
-project(ravenn VERSION 1.9.0)
+project(ravenn VERSION 2.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,7 +63,8 @@ set(RAVENN_SOURCES
     Source/PluginEditor.cpp
     Source/PresetManager.cpp
     Source/Lang.cpp
-    Source/Views18.cpp)
+    Source/Views18.cpp
+    Source/Views20.cpp)
 
 target_sources(ravenn PRIVATE ${RAVENN_SOURCES})
 

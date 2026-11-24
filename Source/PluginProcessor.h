@@ -194,11 +194,15 @@ private:
                            *specCut {}, *mbAuto {}, *dsAuto {},
                            *clipXLo {}, *clipXHi {}, *dsFreqHi {}, *voiceQ {}, *depth3dHi {}, *depth3dQ {},
                            *glueOn {}, *glueThr {}, *glueRatio {}, *glueAtt {}, *glueRel {}, *glueMakeup {}, *glueMix {}, *glueHpf {},
-                           *glueAuto {}, *kick {}, *clipMSAmt {}, *postClip {}, *widthMode {}, *punchMode {}, *dsOn {}, *imgX1 {}, *imgX2 {}, *mbSlope {}, *satSlope {}, *clipSlope {}, *imgSlope {};
+                           *glueAuto {}, *kick {}, *clipMSAmt {}, *postClip {}, *charType2 {}, *charAmt2 {}, *charType3 {}, *charAmt3 {}, *widthMode {}, *punchMode {}, *dsOn {}, *imgX1 {}, *imgX2 {}, *mbSlope {}, *satSlope {}, *clipSlope {}, *imgSlope {};
     } p;
     gdsp::MaskOpen maskOpen;
     gdsp::KickPresence kickFx;
     gdsp::BassDepth bassDepth;
+    gdsp::Decorrelator wingsDec, bandDec;
+    gdsp::WidthPro widthPro;
+    gdsp::Character character2, character3;
+    bool rack2WasOn = false, rack3WasOn = false;
     gdsp::BandMeter4 mbLearner;
     double mbLearnSec = 0;
     gdsp::DeEsser dsLearner;

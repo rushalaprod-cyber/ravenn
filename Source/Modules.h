@@ -1416,7 +1416,7 @@ struct MaskOpen
 {
     BandFilter mDet;
     double fs = 0, envS = 0, envM = 0, g = 1, eC = 0, gUpC = 0, gDnC = 0;
-    double lastLiftDb = 0, lastGuard = 0;
+    double lastLiftDb = 0, lastGuard = 0, lastMb = 0, lastDensity = 0, lastRoom = 0, lastPresence = 0;
 
     void set (double sampleRate, double lo, double hi) noexcept
     {
@@ -1435,15 +1435,18 @@ struct MaskOpen
     inline double process (double b, double M, double amt) noexcept
     {
         const double mb = mDet.process (M);
+        lastMb = mb;
         envS += eC * (b * b - envS);
         envM += eC * (mb * mb - envM);
         const double s = std::sqrt (envS) + 1e-9, m = std::sqrt (envM) + 1e-9;
         // demasquage : centre charge (Mid >> Side) = on ouvre plus
         const double density = std::clamp ((20.0 * std::log10 (m / s) - 3.0) / 15.0, 0.0, 1.0);
+        lastDensity = density;
         double liftDb = amt * (4.5 + 2.5 * density);                    // 100 % : +4,5 a +7 dB
         // Side quasi absent (< -30 dB du Mid) : source mono, on ne remonte pas le bruit de phase
         const double presence = std::clamp ((20.0 * std::log10 (s / m) + 30.0) / 10.0, 0.0, 1.0);
         liftDb *= presence;
+        lastPresence = presence;
         // garde mono : Side * gain <= 0,8 * Mid
         const double maxDb = 20.0 * std::log10 (0.8 * m / s);
         lastGuard = liftDb > maxDb ? 1.0 : 0.0;
@@ -1451,6 +1454,8 @@ struct MaskOpen
         const double tg = std::pow (10.0, liftDb / 20.0);
         g += (tg > g ? gUpC : gDnC) * (tg - g);
         lastLiftDb = 20.0 * std::log10 (g);
+        // place restante sous la garde mono (pour la part decorrelee ajoutee ensuite)
+        lastRoom = std::clamp ((0.9 * m - s * g) / (m + 1e-9), 0.0, 1.0);
         return b * g;
     }
 };

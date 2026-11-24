@@ -148,7 +148,7 @@ void FineSlider::mouseDown (const juce::MouseEvent& e)
 // 1.9 : APPARENCE
 namespace ui
 {
-    juce::StringArray themeNames() { return { "RAVENN", "MIDNIGHT", "CARBON", "EMBER", "MATRIX", "ROSE" }; }
+    juce::StringArray themeNames() { return { "NOCTURNE", "MIDNIGHT", "CARBON", "EMBER", "MATRIX", "ROSE" }; }
 
     void applyTheme()
     {
@@ -156,7 +156,7 @@ namespace ui
         struct T { juce::uint32 bg, panel, edge, track, text, dim, violet, cyan, pink, red, amber, green, blue; };
         static const T themes[6] = {
             // RAVENN : noir, blanc, bleus
-            { 0xff030406, 0xff07090d, 0xff1d2733, 0xff121821, 0xffe9eef3, 0xff738191, 0xff3d7bff, 0xff9ccfff, 0xff6f93c4, 0xfff4f7fb, 0xffc9d6e3, 0xff5fb4ff, 0xff2f5fd0 },
+            { 0xff07080b, 0xff151821, 0xff2f3640, 0xff151920, 0xffe8edf3, 0xff8a93a0, 0xff6fb6ff, 0xffc2e3ff, 0xff8ea2bd, 0xfff5f8fb, 0xffd2dae3, 0xff79d4ff, 0xff2f6fe0 },
             // MIDNIGHT : bleu nuit profond, accents violets
             { 0xff05060f, 0xff0a0c1a, 0xff242a4a, 0xff151a30, 0xffe6e8ff, 0xff7a80a8, 0xff7a5cff, 0xffb8a8ff, 0xff7d86c9, 0xfff3f1ff, 0xffcfd2f0, 0xff8f9bff, 0xff4b3fc4 },
             // CARBON : gris neutres, accent blanc
@@ -290,4 +290,14 @@ void FreqRangeView::drawLiveSpectrum (juce::Graphics& g, juce::Rectangle<float> 
     path.closeSubPath();
     g.setGradientFill (ColourGradient (ui::cyan.withAlpha (0.38f), 0, p.getY(), ui::blue.withAlpha (0.08f), 0, p.getBottom(), false));
     g.fillPath (path);
+}
+//==============================================================================
+// Coin de redimensionnement : trois points discrets au lieu du triangle hachure
+void RavennLookAndFeel::drawCornerResizer (juce::Graphics& g, int w, int h, bool over, bool dragging)
+{
+    const float s = (float) juce::jmin (w, h);
+    const float d = juce::jmax (2.f, s * 0.13f);
+    g.setColour ((over || dragging ? ui::cyan : ui::dim).withAlpha (over || dragging ? 0.9f : 0.45f));
+    const juce::Point<float> pts[3] = { { s * 0.78f, s * 0.42f }, { s * 0.78f, s * 0.78f }, { s * 0.42f, s * 0.78f } };
+    for (auto p : pts) g.fillEllipse (p.x - d * 0.5f, p.y - d * 0.5f, d, d);
 }
