@@ -736,6 +736,33 @@ int main()
         std::printf ("%-22s etat %d  %s\n", "Auto de-ess", p.getDeEssLearnState(), check (p.getDeEssLearnState() == 2));
     }
 
+    // --- 1.9 : BASS DEPTH 2 : renforce le grave sans s'emballer (pas de bosse resonante)
+    {
+        RavennProcessor a, b; setP (b, "depth", 100.f);
+        const auto ra = run (a, 48000.0, 512, 0.3f, 5.0), rb = run (b, 48000.0, 512, 0.3f, 5.0);
+        const float d = rb.lufs - ra.lufs;
+        std::printf ("Bass depth 100 %%       +%.1f LU, crete %.2f  %s\n", d, rb.peak, check (rb.finite && d > 0.2f && d < 4.f));
+    }
+    // --- 1.9 : AUTO MULTIBAND regle les 4 bandes
+    {
+        RavennProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        p.startMbLearn();
+        run (p, 48000.0, 512, 0.5f, 7.0);
+        const bool ready = p.mbLearnState.load() == 2;
+        std::printf ("%-22s etat %d  %s\n", "Auto multiband", p.mbLearnState.load(), check (ready));
+    }
+    // --- 1.9 : WIDTH 3 BANDES ignore la largeur globale, et inversement
+    {
+        RavennProcessor a, b;
+        setP (a, "width", 0.f); setP (a, "widthMode", 1);          // 3 bandes : width global ignore
+        setP (b, "imgHigh", 0.f);                                   // global : bandes ignorees
+        const auto ra = run (a, 48000.0, 512, 0.3f, 3.0, true), rb = run (b, 48000.0, 512, 0.3f, 3.0, true);
+        RavennProcessor c; const auto rc = run (c, 48000.0, 512, 0.3f, 3.0, true);
+        const float da = diffDb (rc.out, ra.out), db = diffDb (rc.out, rb.out);
+        std::printf ("%-22s ecarts %.1f / %.1f dB  %s\n", "Width un seul mode", da, db, check (da < -80.f && db < -80.f));
+    }
+
     // --- Gros bloc
     {
         RavennProcessor p;

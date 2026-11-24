@@ -17,22 +17,38 @@ namespace ui
     }
 
     // Palette sombre : noir, blanc, nuances de bleu (acier / glace / nuit)
-    const juce::Colour bg      { 0xff030406 };
-    const juce::Colour panel   { 0xff07090d };
-    const juce::Colour edge    { 0xff1d2733 };
-    const juce::Colour track   { 0xff121821 };
-    const juce::Colour text    { 0xffe9eef3 };
-    const juce::Colour dim     { 0xff738191 };
-    const juce::Colour violet  { 0xff3d7bff };   // bleu electrique
-    const juce::Colour cyan    { 0xff9ccfff };   // glace
-    const juce::Colour pink    { 0xff6f93c4 };   // acier bleute
-    const juce::Colour red     { 0xfff4f7fb };   // blanc os
-    const juce::Colour amber   { 0xffc9d6e3 };   // argent
-    const juce::Colour green   { 0xff5fb4ff };   // bleu clair
-    const juce::Colour blue    { 0xff2f5fd0 };   // bleu nuit
+    inline juce::Colour bg      { 0xff030406 };
+    inline juce::Colour panel   { 0xff07090d };
+    inline juce::Colour edge    { 0xff1d2733 };
+    inline juce::Colour track   { 0xff121821 };
+    inline juce::Colour text    { 0xffe9eef3 };
+    inline juce::Colour dim     { 0xff738191 };
+    inline juce::Colour violet  { 0xff3d7bff };   // bleu electrique
+    inline juce::Colour cyan    { 0xff9ccfff };   // glace
+    inline juce::Colour pink    { 0xff6f93c4 };   // acier bleute
+    inline juce::Colour red     { 0xfff4f7fb };   // blanc os
+    inline juce::Colour amber   { 0xffc9d6e3 };   // argent
+    inline juce::Colour green   { 0xff5fb4ff };   // bleu clair
+    inline juce::Colour blue    { 0xff2f5fd0 };   // bleu nuit
 
     // Image floutee (pour ne garder que les teintes de la cover)
     juce::Image blurred (const juce::Image& src, int w, int h, int smallSize = 40);
+
+    // ---- Apparence (1.9) : theme, accent, fond, style des potards, onglets masques, taille
+    struct Appearance
+    {
+        int theme = 0;
+        juce::Colour accent;          // transparent = couleur du theme
+        bool cover = true;
+        int knobStyle = 0;            // 0 = neon, 1 = minimal
+        juce::BigInteger hiddenTabs;  // bit = page masquee
+        float scale = 1.f;
+    };
+    inline Appearance appearance;
+    juce::StringArray themeNames();
+    void applyTheme();                // applique appearance.theme / accent aux couleurs ui::
+    void loadAppearance();
+    void saveAppearance();
 }
 
 //==============================================================================
@@ -40,6 +56,7 @@ class RavennLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     RavennLookAndFeel();
+    void applyColours();
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool hover, bool down) override;
@@ -52,6 +69,18 @@ public:
 };
 
 //==============================================================================
+// Potard precis : Ctrl ou Shift + glisser = reglage fin, clic droit = taper une valeur
+class FineSlider : public juce::Slider
+{
+public:
+    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        setMouseDragSensitivity (e.mods.isShiftDown() || e.mods.isCtrlDown() || e.mods.isCommandDown() ? 1600 : 220);
+        juce::Slider::mouseDrag (e);
+    }
+};
+
 class NeonKnob : public juce::Component
 {
 public:
@@ -59,7 +88,9 @@ public:
               juce::Colour c, const juce::String& tip);
     void resized() override;
     void paint (juce::Graphics&) override;
-    juce::Slider slider;
+    FineSlider slider;
+    void setAccent (juce::Colour c) { colour = c; slider.setColour (juce::Slider::rotarySliderFillColourId, c); repaint(); }
+    juce::Colour getAccent() const { return colour; }
 
 private:
     juce::String title;
@@ -269,6 +300,9 @@ public:
     FreqRangeView (juce::AudioProcessorValueTreeState& s, bool bellMode, juce::String idA, juce::String idB, juce::String idQ, juce::String idGain = {})
         : st (s), bell (bellMode), a (idA), b (idB), q (idQ), gainId (idGain) { startTimerHz (15); }
     void paint (juce::Graphics&) override;
+    RavennProcessor* specProc = nullptr;     // 1.9 : spectre du centre (Mid) en fond
+    void drawLiveSpectrum (juce::Graphics& g, juce::Rectangle<float> p);
+    std::vector<float> specSmooth;
 private:
     void timerCallback() override { repaint(); }
     juce::AudioProcessorValueTreeState& st;
@@ -297,6 +331,18 @@ private:
     void timerCallback() override;
     RavennProcessor& proc;
     float needle = 0.f, hold = 0.f; int holdT = 0;
+};
+
+// Volume de sortie (OUT) : barre horizontale toujours visible
+class OutFader : public juce::Component
+{
+public:
+    OutFader (juce::AudioProcessorValueTreeState& s);
+    void paint (juce::Graphics&) override;
+    void resized() override { slider.setBounds (getLocalBounds()); }
+    FineSlider slider;
+private:
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
 };
 
 // Waveform du clipper : avant (acier), apres (glace), crete coupee (blanc), plafond 0 dBFS
@@ -506,6 +552,17 @@ private:
     void saveUserVoices();
     void rebuildVoiceBox();
     int lastAiState = -1, lastDsLearn = -1;
+
+    // ---- 1.9
+    NeonKnob clipMSAmt, postClip;
+    Segmented widthMode, punchMode;
+    OutFader outFader;
+    juce::TextButton appearanceBtn, mbAutoBtn, mbResetBtn;
+    juce::OwnedArray<juce::TextButton> sectionResets;
+    void resetSection (const juce::String& panelTitle);
+    void showAppearanceMenu();
+    void applyAppearance();
+    int lastWidthMode = -1, lastMbLearn = -1;
 
     std::vector<Panel> panels;
     std::vector<std::pair<juce::Component*, int>> pageOf;

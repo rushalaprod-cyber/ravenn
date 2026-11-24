@@ -86,7 +86,9 @@ namespace
 }
 
 //==============================================================================
-RavennLookAndFeel::RavennLookAndFeel()
+RavennLookAndFeel::RavennLookAndFeel() { applyColours(); }
+
+void RavennLookAndFeel::applyColours()
 {
     using namespace juce;
     setColour (ResizableWindow::backgroundColourId, ui::bg);
@@ -160,7 +162,7 @@ void RavennLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w
     {
         Path val;
         val.addCentredArc (c.x, c.y, arcR, arcR, 0.f, jmin (a0, a1), jmax (a0, a1), true);
-        for (int i = 4; i >= 1; --i)
+        for (int i = (ui::appearance.knobStyle == 1 ? 0 : 4); i >= 1; --i)
         {
             g.setColour (fill.withAlpha (0.055f));
             g.strokePath (val, PathStrokeType (lw * (1.f + (float) i * 0.9f), PathStrokeType::curved, PathStrokeType::rounded));
@@ -615,7 +617,7 @@ void Spectrum::paint (juce::Graphics& g)
         if (! coverSrc.isValid()) coverSrc = ImageCache::getFromMemory (BinaryData::cover_jpg, BinaryData::cover_jpgSize);
         if (backdrop.getWidth() != (int) plot.getWidth() || backdrop.getHeight() != (int) plot.getHeight())
             backdrop = ui::blurred (coverSrc,jmax (1, (int) plot.getWidth()), jmax (1, (int) plot.getHeight()), 24);
-        g.setOpacity (0.55f);
+        g.setOpacity (ui::appearance.cover ? 0.55f : 0.f);
         g.drawImageAt (backdrop, (int) plot.getX(), (int) plot.getY());
         g.setOpacity (1.f);
         g.setColour (Colours::black.withAlpha (0.35f));
@@ -1736,6 +1738,7 @@ void FreqRangeView::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r.reduced (0.5f), 3.f, 1.f);
     auto p = r.reduced (6.f, 4.f).withTrimmedBottom (10.f);
     auto xOf = [&] (float f) { return p.getX() + p.getWidth() * std::log (jlimit (20.f, 20000.f, f) / 20.f) / std::log (1000.f); };
+    drawLiveSpectrum (g, p);
     g.setFont (ui::font (8.f, true));
     for (float f : { 100.f, 1000.f, 10000.f })
     {
@@ -2162,7 +2165,7 @@ PresetBrowser::PresetBrowser (RavennProcessor& p) : proc (p)
     exportBtn.onClick = [this] { if (onExport) onExport(); };
     closeBtn.setButtonText (ui::tr ("FERMER"));
     folderBtn.setButtonText (ui::tr ("DOSSIER"));
-    exportBtn.setTooltip (ui::tr ("Exporte le réglage actuel dans un fichier .preset, où tu veux (pour le partager)."));
+    exportBtn.setTooltip (ui::tr ("Exporte le réglage actuel dans un fichier .rvn, où tu veux (pour le partager)."));
     for (auto* b : { &closeBtn, &saveBtn, &importBtn, &folderBtn, &exportBtn }) addAndMakeVisible (b);
     closeBtn.setColour (juce::TextButton::buttonOnColourId, ui::cyan);
     closeBtn.setToggleState (true, juce::dontSendNotification);
@@ -2281,7 +2284,7 @@ namespace
 }
 
 RavennEditor::RavennEditor (RavennProcessor& p)
-    : AudioProcessorEditor (p), proc (p),
+    : AudioProcessorEditor ((ui::loadAppearance(), p)), proc (p),
       mouth    (p.apvts, "mouth",    "THE MOUTH",  ui::red,    tr ("Distorsion à harmoniques paires, calée sur MONSTER. Elle épaissit, et mord plus fort quand tu montes l'entrée.")),
       mask     (p.apvts, "mask",     "THE MASK",   ui::violet, tr ("Ouvre le Side dans la bande choisie, jusqu'à +7 dB, sans saturation. Démasquage : plus le centre est chargé (voix, kick, basse), plus les côtés s'écartent pour lui faire de la place. Garde mono : le Side ne dépasse jamais 80 % du centre, et un son mono n'est jamais élargi artificiellement.")),
       depth    (p.apvts, "depth",    "BASS DEPTH", ui::pink,   tr ("Profondeur des basses : harmoniques des graves + bosse de sub à 55 Hz.")),
@@ -2291,7 +2294,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       out      (p.apvts, "out",      "OUT",        ui::cyan,   tr ("Volume de sortie, tout à la fin. Pour comparer à volume égal.")),
       tilt     (p.apvts, "tilt",     "TILT",       ui::cyan,   tr ("Bascule le spectre autour de 1 kHz : + = plus brillant, - = plus chaud.")),
       lowShelf (p.apvts, "lowShelf", "LOW",        ui::cyan,   tr ("Low shelf à 100 Hz.")),
-      air      (p.apvts, "air",      "AIR",        ui::cyan,   tr ("High shelf à 12 kHz.")),
+      air      (p.apvts, "air",      "AIR",        ui::cyan,   tr ("AIR : ouvre le haut du spectre (shelf à 12 kHz + excitation au-dessus de 11 kHz) et recule tout seul sur les sifflantes.")),
       width    (p.apvts, "width",    "WIDTH",      ui::violet, tr ("Largeur stéréo : 0 % = mono, 100 % = original, 200 % = très large.")),
       monoFreq (p.apvts, "monoFreq", "MONO FREQ",  ui::violet, tr ("Fréquence sous laquelle les graves passent en mono.")),
       mix      (p.apvts, "mix",      "MIX",        ui::cyan,   tr ("Mélange signal traité / signal original.")),
@@ -2322,7 +2325,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       charNoise(p.apvts, "charNoise","CRACKLE",    ui::pink,   tr ("Craquements de vinyle. À zéro : aucun bruit ajouté.")),
       airMid   (p.apvts, "airMid",   "MID AIR",    ui::cyan,   tr ("Ouvre le haut-médium (5 kHz) avec une excitation douce. Recule tout seul sur les sifflantes.")),
       airHigh  (p.apvts, "airHigh",  "HIGH AIR",   ui::cyan,   tr ("Ajoute de l'air au-dessus de 11 kHz. Recule tout seul sur les sifflantes.")),
-      voice    (p.apvts, "voice",    "VOICE",      ui::red,    tr ("Présence de la voix : creuse ou fait ressortir la zone de la voix, sur le centre uniquement.")),
+      voice    (p.apvts, "voice",    "VOICE",      ui::red,    tr ("VOICE : en positif, fait ressortir la voix (présence + les côtés s'écartent de sa zone pour la démasquer). En négatif, creuse la zone. Sur le centre uniquement.")),
       voiceFreq(p.apvts, "voiceFreq","VOICE FREQ", ui::pink,   tr ("Fréquence de la présence voix (2-3 kHz pour la plupart des voix).")),
       depth3d  (p.apvts, "depth3d",  "3D DEPTH",   ui::violet, tr ("Profondeur : décorrèle les côtés dans les aigus et avance le centre. Reste compatible mono.")),
       space    (p.apvts, "space",    "SPACE",      ui::cyan,   tr ("Toute petite réverb pour la fluidité du son (le grave n'y passe pas).")),
@@ -2397,7 +2400,12 @@ RavennEditor::RavennEditor (RavennProcessor& p)
       imgSlope  (p.apvts, "imgSlope",  ui::amber, tr ("Pente des coupures entre les bandes : 12 dB/oct = transitions douces et larges, 24 = standard, 48 = bandes bien séparées."), { "12", "24", "48" }),
       glueAuto (p.apvts, "glueAuto", "AUTO GAIN", ui::green, tr ("Auto gain du glue : rend automatiquement le volume perdu par la compression (environ 85 % de la réduction moyenne).")),
       dsOn     (p.apvts, "dsOn",     "DE-ESSER",  ui::cyan,  tr ("Active ou coupe le de-esser.")),
-      clipWave (p), maskMeter (p)
+      clipWave (p), maskMeter (p),
+      clipMSAmt (p.apvts, "clipMSAmt", "MID-SIDE", ui::violet, tr ("Mid-Side (façon ASH) : 0 % = clip stéréo L/R classique, 100 % = le centre et les côtés sont clippés séparément (le centre reste solide, les côtés gardent leur ampleur).")),
+      postClip  (p.apvts, "postClip",  "POST CLIP", ui::cyan,  tr ("Gain après le clipper (façon ASH) : rattrape ou baisse le niveau juste après le clip, avant le reste de la chaîne.")),
+      widthMode (p.apvts, "widthMode", ui::violet, tr ("GLOBAL = un seul réglage de largeur. 3 BANDES = largeur séparée pour les graves, les médiums et les aigus. Un seul des deux agit à la fois."), { "GLOBAL", "3 BANDES" }),
+      punchMode (p.apvts, "punchMode", ui::red,    tr ("ALL = renforce les attaques de tout. KICK = seulement le kick (corps 60 Hz + clic 3,5 kHz, rien entre les kicks)."), { "ALL", "KICK" }),
+      outFader (p.apvts)
 {
     setLookAndFeel (&lnf);
 
@@ -2446,6 +2454,30 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     for (auto* c : std::initializer_list<juce::Component*> { &dsView, &dsFreqHi }) place (*c, 6);
     for (auto* c : std::initializer_list<juce::Component*> { &clipGauge, &clipXLo, &clipXHi }) place (*c, 0);
     place (matchRefBtn, 4); place (changesRefBtn, 4);
+
+    // ---- 1.9
+    voiceView.specProc = &proc;
+    place (clipMSAmt, 0); place (postClip, 0); place (punchMode, 0); place (widthMode, 7);
+    addAndMakeVisible (outFader);
+    addAndMakeVisible (appearanceBtn);
+    appearanceBtn.setButtonText (tr ("APPARENCE"));
+    appearanceBtn.setTooltip (tr ("Thème, couleur d'accent, image de fond, style des potards, taille de la fenêtre et onglets affichés."));
+    appearanceBtn.onClick = [this] { showAppearanceMenu(); };
+    mbPage.addAndMakeVisible (mbAutoBtn);
+    mbPage.addAndMakeVisible (mbResetBtn);
+    mbAutoBtn.setButtonText ("AUTO");
+    mbAutoBtn.setColour (juce::TextButton::buttonOnColourId, ui::green);
+    mbAutoBtn.setTooltip (tr ("Auto multibande : lance la lecture puis clique. ravenn écoute 5 s le niveau de chaque bande et règle seuils, ratios, attaques et relâchements pour tenir seulement les pointes. Une seule étape d'undo."));
+    mbAutoBtn.onClick = [this] { proc.startMbLearn(); };
+    mbResetBtn.setButtonText (juce::String::fromUTF8 ("\xe2\x86\xba"));
+    mbResetBtn.setTooltip (tr ("Remet cette partie à zéro (annulable)."));
+    mbResetBtn.onClick = [this] { resetSection ("MULTIBAND"); };
+    // VOICE FOCUS, HIGH AIR, KICK et ANALOG sont fusionnes dans VOICE, AIR, PUNCH et CHARACTER
+    for (auto* c : std::initializer_list<juce::Component*> { &voiceFocus, &airHigh, &kick, &analog, &clipMS, &out })
+        for (auto it = pageOf.begin(); it != pageOf.end();)
+            it = (it->first == c) ? pageOf.erase (it) : it + 1;
+    for (auto* c : std::initializer_list<juce::Component*> { &voiceFocus, &airHigh, &kick, &analog, &clipMS, &out }) c->setVisible (false);
+    place (air, 1);
 
     // ---- 1.8
     spectrum.mbGr = &mbPage.grDisp;
@@ -2568,7 +2600,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     browser.onExport = [this]
     {
         chooser = std::make_unique<juce::FileChooser> (tr ("Exporter le preset"),
-                                                       juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (proc.presets.getCurrent() + ".preset"), "*.preset");
+                                                       juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (proc.presets.getCurrent() + ".rvn"), "*.rvn");
         juce::Component::SafePointer<RavennEditor> safe (this);
         chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
                               [safe] (const juce::FileChooser& fc)
@@ -2577,7 +2609,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
             auto f = fc.getResult();
             if (f == juce::File()) return;
             auto st = safe->proc.apvts.copyState();
-            if (auto xml = st.createXml()) xml->writeTo (f.withFileExtension (".preset"));
+            if (auto xml = st.createXml()) xml->writeTo (f.withFileExtension (".rvn"));
         });
     };
 
@@ -2654,7 +2686,7 @@ RavennEditor::RavennEditor (RavennProcessor& p)
     folderBtn.setTooltip (tr ("Ouvre le dossier des presets (Documents/ravenn/Presets)"));
     folderBtn.onClick = [this] { proc.presets.openFolder(); };
     importBtn.setButtonText ("IMPORT");
-    importBtn.setTooltip (tr ("Importe des fichiers .preset (copiés dans ton dossier de presets)"));
+    importBtn.setTooltip (tr ("Importe des fichiers .rvn (copiés dans ton dossier de presets)"));
     importBtn.onClick = [this] { importPresets(); };
     abBtn.setColour (juce::TextButton::buttonOnColourId, ui::cyan);
     abBtn.setTooltip (tr ("Bascule entre les réglages A et B"));
@@ -2725,11 +2757,22 @@ RavennEditor::RavennEditor (RavennProcessor& p)
               "loudness, recopie son équilibre par octave (EQ MATCH) et sa largeur stéréo.") },
     };
 
+    // un bouton RESET par partie (coin haut droit de chaque panneau)
+    for (auto& pn : panels)
+    {
+        auto* b = sectionResets.add (new juce::TextButton (juce::String::fromUTF8 ("\xe2\x86\xba")));
+        b->getProperties().set ("panel", pn.title);
+        b->setTooltip (tr ("Remet cette partie à zéro (annulable)."));
+        const auto title = pn.title;
+        b->onClick = [this, title] { resetSection (title); };
+        addChildComponent (b);
+    }
+
     setResizable (true, true);
     setResizeLimits (930, 660, 1860, 1320);
     if (auto* c = getConstrainer())
         c->setFixedAspectRatio ((double) baseW / (double) baseH);
-    setSize ((int) baseW, (int) baseH);
+    setSize (juce::roundToInt (baseW * juce::jlimit (0.75f, 1.5f, ui::appearance.scale)), juce::roundToInt (baseH * juce::jlimit (0.75f, 1.5f, ui::appearance.scale)));
 
     setPage (0);
     refreshPresets();
@@ -2787,7 +2830,23 @@ void RavennEditor::setPage (int pg)
 {
     page = pg;
     spectrum.showBands = (pg == 5);
+    if (ui::appearance.hiddenTabs[pg] && pg != 0) { page = pg = 0; spectrum.showBands = false; }
     for (auto& [c, p] : pageOf) c->setVisible (p == page);
+    // WIDTH : GLOBAL ou 3 BANDES, jamais les deux
+    if (page == 7)
+    {
+        const bool bands = proc.apvts.getRawParameterValue ("widthMode")->load() > 0.5f;
+        width.setVisible (! bands);
+        for (auto* c : std::initializer_list<juce::Component*> { &imgLow, &imgMid, &imgHigh, &imgX1, &imgX2, &imgSlope }) c->setVisible (bands);
+    }
+    for (auto* b : sectionResets)
+    {
+        int pp = -1;
+        for (auto& pn : panels) if (pn.title == b->getProperties()["panel"].toString()) pp = pn.page;
+        b->setVisible (pp == page);
+        b->toFront (false);
+    }
+    for (auto* tb : tabs) tb->setVisible (! ui::appearance.hiddenTabs[(int) tb->getProperties()["page"]] || (int) tb->getProperties()["page"] == 0);
     for (auto* tb : tabs) tb->setToggleState ((int) tb->getProperties()["page"] == page, juce::dontSendNotification);
     repaint();
 }
@@ -2833,7 +2892,7 @@ void RavennEditor::savePreset()
 void RavennEditor::importPresets()
 {
     chooser = std::make_unique<juce::FileChooser> (tr ("Importer des presets ravenn"),
-                                                   juce::File::getSpecialLocation (juce::File::userHomeDirectory), "*.preset");
+                                                   juce::File::getSpecialLocation (juce::File::userHomeDirectory), "*.rvn;*.preset");
     juce::Component::SafePointer<RavennEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
                               | juce::FileBrowserComponent::canSelectMultipleItems,
@@ -2887,6 +2946,18 @@ void RavennEditor::importReference()
 
 void RavennEditor::timerCallback()
 {
+    {
+        const int wm = (int) proc.apvts.getRawParameterValue ("widthMode")->load();
+        if (wm != lastWidthMode) { lastWidthMode = wm; if (page == 7) { setPage (page); resized(); } }
+        const int ml = proc.mbLearnState.load();
+        const int key = ml == 1 ? 10 + juce::roundToInt (proc.getMbLearnProgress() * 5.f) : ml;
+        if (key != lastMbLearn)
+        {
+            lastMbLearn = key;
+            mbAutoBtn.setButtonText (ml == 1 ? tr ("ÉCOUTE… ") + juce::String (5 - juce::roundToInt (proc.getMbLearnProgress() * 5.f)) + " s" : juce::String ("AUTO"));
+            mbAutoBtn.setToggleState (ml == 1, juce::dontSendNotification);
+        }
+    }
     // etats des boutons AUTO IN / AUTO DE-ESS
     {
         const int ai = proc.getAutoInState();
@@ -2976,7 +3047,7 @@ void RavennEditor::buildBackground (float pxScale)
     const float s = (float) getWidth() / baseW;
 
     // Cover floutee : on n'en garde que les teintes
-    if (coverImg.isValid())
+    if (coverImg.isValid() && ui::appearance.cover)
     {
         auto bl = ui::blurred (coverImg, w, h, 32);
         g.setOpacity (0.95f);
@@ -3222,8 +3293,7 @@ void RavennEditor::resized()
         maskBand.setBounds (right.removeFromBottom (px (50)).reduced (px (4), 0));
         right.removeFromBottom (px (20));
         mask.setBounds (right.reduced (px (4), 0));
-        depth.setBounds (bot.removeFromLeft (bot.getWidth() / 2).reduced (px (12)));
-        analog.setBounds (bot.reduced (px (12)));
+        depth.setBounds (bot.withSizeKeepingCentre (bot.getWidth() / 2, bot.getHeight()).reduced (px (6)));
     }
     {
         auto a = inner ("CLIPPER");
@@ -3234,11 +3304,12 @@ void RavennEditor::resized()
             autoInBtn.setBounds (ic.removeFromBottom (px (24)).reduced (px (4), 0));
             in.setBounds (ic.withSizeKeepingCentre (px (78), juce::jmin (ic.getHeight(), px (104))));
         }
-        out.setBounds (a.removeFromRight (px (78)).withSizeKeepingCentre (px (78), px (104)));
+        postClip.setBounds (a.removeFromRight (px (70)).withSizeKeepingCentre (px (70), px (100)));
         {
-            auto kc = a.removeFromRight (px (64)).withSizeKeepingCentre (px (64), px (112));
-            clipMS.setBounds (kc.removeFromBottom (px (24)).reduced (px (6), 0));
-            clipKnee.setBounds (kc);
+            // facon ASH : KNEE et MID-SIDE empiles
+            auto kc = a.removeFromRight (px (64));
+            clipKnee.setBounds (kc.removeFromTop (kc.getHeight() / 2));
+            clipMSAmt.setBounds (kc);
         }
         clip.setBounds (a.reduced (px (2), 0));
         link.setBounds (ctrl.removeFromLeft (px (56)));
@@ -3257,7 +3328,7 @@ void RavennEditor::resized()
         ottLow.setBounds (r2.removeFromLeft (cw).reduced (px (6)));
         ottMid.setBounds (r2.removeFromLeft (cw).reduced (px (6)));
         ottHigh.setBounds (r2.reduced (px (6)));
-        kick.setBounds (r3.removeFromLeft (cw).reduced (px (3)));
+        punchMode.setBounds (r3.removeFromLeft (cw).withSizeKeepingCentre (cw - px (12), px (26)));
         ottXLo.setBounds (r3.removeFromLeft (cw).reduced (px (6)));
         ottXHi.setBounds (r3.reduced (px (6)));
     }
@@ -3273,7 +3344,6 @@ void RavennEditor::resized()
         auto r1 = a.removeFromTop (rh), r2 = a.removeFromTop (rh), r3 = a;
         tilt.setBounds (r1.removeFromLeft (w).reduced (px (3)));
         lowShelf.setBounds (r1.removeFromLeft (w).reduced (px (3)));
-        air.setBounds (r1.reduced (px (3)));
         lowCut.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         highCut.setBounds (r2.removeFromLeft (w).reduced (px (3)));
         eqPos.setBounds (r3.withSizeKeepingCentre (px (160), px (28)));
@@ -3289,19 +3359,18 @@ void RavennEditor::resized()
             voicePresetBox.setBounds (tr0);
         }
         a.removeFromTop (px (6));
-        voiceView.setBounds (a.removeFromTop (px (78)));
-        a.removeFromTop (px (6));
-        const int w = a.getWidth() / 2, rh = a.getHeight() / 2;
-        auto r1 = a.removeFromTop (rh), r2 = a;
-        voice.setBounds (r1.removeFromLeft (w).reduced (px (4)));
-        voiceFreq.setBounds (r1.reduced (px (4)));
-        voiceQ.setBounds (r2.removeFromLeft (w).reduced (px (4)));
-        voiceFocus.setBounds (r2.reduced (px (4)));
+        // le spectre du centre en grand derriere la zone de la voix
+        voiceView.setBounds (a.removeFromTop (a.getHeight() * 48 / 100));
+        a.removeFromTop (px (8));
+        const int w = a.getWidth() / 3;
+        voice.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        voiceFreq.setBounds (a.removeFromLeft (w).reduced (px (2)));
+        voiceQ.setBounds (a.reduced (px (2)));
     }
     {
         auto a = inner ("FRESH AIR");
         airMid.setBounds (a.removeFromTop (a.getHeight() / 2).reduced (px (6)));
-        airHigh.setBounds (a.reduced (px (6)));
+        air.setBounds (a.reduced (px (6)));
     }
     {
         auto a = inner ("SPACE");
@@ -3316,9 +3385,13 @@ void RavennEditor::resized()
     area ("3D DEPTH") = R (504, Y, 484, H);
     {
         auto a = inner ("STEREO");
+        widthMode.setBounds (a.removeFromTop (px (28)).withSizeKeepingCentre (px (260), px (28)));
+        a.removeFromTop (px (8));
         const int w = a.getWidth() / 3;
-        auto r1 = a.removeFromTop (a.getHeight() * 37 / 100), r2 = a.removeFromTop (a.getHeight() * 55 / 100), r3 = a;
-        width.setBounds (r1.removeFromLeft (w).reduced (px (4)));
+        const bool bands = proc.apvts.getRawParameterValue ("widthMode")->load() > 0.5f;
+        auto r1 = a.removeFromTop (bands ? a.getHeight() * 37 / 100 : a.getHeight() * 55 / 100), r2 = a.removeFromTop (a.getHeight() * 55 / 100), r3 = a;
+        if (! bands) { width.setBounds (r1.removeFromLeft (w).reduced (px (4))); }
+        else width.setBounds (r1.removeFromLeft (w).reduced (px (4)));
         monoFreq.setBounds (r1.removeFromLeft (w).reduced (px (4)));
         monoBass.setBounds (r1.withSizeKeepingCentre (w - px (16), px (32)));
         imgLow.setBounds (r2.removeFromLeft (w).reduced (px (4)));
@@ -3516,6 +3589,24 @@ void RavennEditor::resized()
         refMatch.setBounds (a.withSizeKeepingCentre (px (170), jmin (a.getHeight(), px (180))));
     }
 
+
+    // ---- 1.9 : OUTPUT, APPARENCE, resets par partie, boutons du multibande
+    outFader.setBounds (R (1014, 452, 200, 22));
+    appearanceBtn.setBounds (R (1016, 812, 92, 26));
+    appearanceBtn.toFront (false);
+    for (auto* b : sectionResets)
+    {
+        const auto title = b->getProperties()["panel"].toString();
+        for (auto& pn : panels)
+            if (pn.title == title && ! pn.area.isEmpty())
+                b->setBounds (pn.area.getRight() - px (28), pn.area.getY() + px (6), px (20), px (18));
+    }
+    {
+        const float ms = (float) mbPage.getWidth() / 976.f;
+        auto mpx = [ms] (float v) { return juce::roundToInt (v * ms); };
+        mbResetBtn.setBounds (mpx (700 - 28), mpx (6), mpx (20), mpx (18));
+        mbAutoBtn.setBounds (mpx (700 - 28 - 72), mpx (5), mpx (66), mpx (20));
+    }
     background = {};
 }
 
@@ -3554,4 +3645,135 @@ void RavennEditor::rebuildVoiceBox()
         voicePresetBox.addSectionHeading (tr ("MES PRESETS"));
         for (int i = 0; i < (int) userVoices.size(); ++i) voicePresetBox.addItem (userVoices[(size_t) i].name, 101 + i);
     }
+}
+//==============================================================================
+// 1.9 : RESET par partie
+void RavennEditor::resetSection (const juce::String& title)
+{
+    static const std::vector<std::pair<const char*, std::vector<const char*>>> sections = {
+        { "COLOR",     { "mouth", "mask", "maskBand", "depth", "analog", "body" } },
+        { "CLIPPER",   { "in", "clip", "clipKnee", "clipMS", "clipMSAmt", "postClip", "clipShape", "clipBand", "link" } },
+        { "CLIPPER METER", { "clipXLo", "clipXHi", "clipSlope" } },
+        { "DYNAMICS",  { "punch", "punchMode", "kick", "ott", "ottTime", "ottLow", "ottMid", "ottHigh", "ottXLo", "ottXHi" } },
+        { "EQ",        { "tilt", "lowShelf", "lowCut", "highCut", "eqPos" } },
+        { "VOICE",     { "voice", "voiceFreq", "voiceQ", "voiceFocus" } },
+        { "3D DEPTH",  { "depth3d", "depth3dFreq", "depth3dHi", "depth3dQ" } },
+        { "GLUE",      { "glueOn", "glueThr", "glueRatio", "glueAtt", "glueRel", "glueMakeup", "glueMix", "glueHpf", "glueAuto" } },
+        { "FRESH AIR", { "airMid", "airHigh", "air" } },
+        { "STEREO",    { "width", "widthMode", "monoBass", "monoFreq", "imgLow", "imgMid", "imgHigh", "imgX1", "imgX2", "imgSlope" } },
+        { "SPACE",     { "space", "spaceSize", "spaceLow" } },
+        { "FATTEN",    { "fatten", "fatColor" } },
+        { "SPECTRAL BALANCE", { "stabilize", "specRes", "specSpeed", "specTarget", "specCut" } },
+        { "DE-ESSER",  { "dsOn", "dsFreq", "dsFreqHi", "dsThr", "dsRange", "dsAuto", "dsListen" } },
+        { "MULTIBAND SATURATION", { "satDrive1", "satDrive2", "satDrive3", "satStyle1", "satStyle2", "satStyle3", "satXLo", "satXHi", "satMix", "satSlope" } },
+        { "CHARACTER", { "charType", "charAmt", "charWow", "charNoise", "analog" } },
+        { "LIMITER",   { "limOn", "limGain", "limCeil", "limStyle", "limLook", "limAttack", "limRelease", "limLinkT", "limLinkR", "limTP", "limUnity", "limSoft", "dither" } },
+        { "OUTPUT",    { "mix", "delta", "autoGain", "os", "out" } },
+        { "VOICE SIDECHAIN", { "scDepth" } },
+        { "REFERENCE", { "refMatch" } },
+    };
+    std::vector<juce::String> ids;
+    if (title == "MULTIBAND")
+    {
+        for (auto* id : { "mbOn", "mbAuto", "mbKnee", "mbMix", "mbSlope", "mbX1", "mbX2", "mbX3" }) ids.push_back (id);
+        for (int k = 1; k <= 4; ++k)
+            for (auto* b : { "mbThr", "mbRatio", "mbAtt", "mbRel", "mbGain", "mbSolo", "mbByp" }) ids.push_back (juce::String (b) + juce::String (k));
+        for (int k = 1; k <= 2; ++k)
+            for (auto* b : { "dynFreq", "dynQ", "dynThr", "dynRange" }) ids.push_back (juce::String (b) + juce::String (k));
+    }
+    else
+        for (auto& [t, list] : sections) if (title == t) for (auto* id : list) ids.push_back (id);
+    if (ids.empty()) return;
+    proc.undo.beginNewTransaction ("Reset " + title);
+    for (auto& id : ids)
+        if (auto* prm = proc.apvts.getParameter (id))
+        { prm->beginChangeGesture(); prm->setValueNotifyingHost (prm->getDefaultValue()); prm->endChangeGesture(); }
+    proc.undo.beginNewTransaction();
+    vhs.show ("RESET", title, tr ("Remis à zéro. UNDO pour revenir en arrière."));
+}
+
+//==============================================================================
+// 1.9 : APPARENCE
+void RavennEditor::showAppearanceMenu()
+{
+    using juce::PopupMenu;
+    PopupMenu m, th, ac, sz, tb, kn;
+    const auto names = ui::themeNames();
+    for (int i = 0; i < names.size(); ++i) th.addItem (100 + i, names[i], true, ui::appearance.theme == i);
+    struct AC { const char* n; juce::uint32 c; };
+    static const AC accents[] = { { "Theme", 0 }, { "Bleu", 0xff3d7bff }, { "Cyan", 0xff22d3ee }, { "Violet", 0xff8b5cf6 }, { "Rose", 0xffff4fa3 },
+                                  { "Rouge", 0xffff3b3b }, { "Orange", 0xffff7a1a }, { "Or", 0xffe8b931 }, { "Vert", 0xff2fd06a }, { "Blanc", 0xfff2f2f2 } };
+    for (int i = 0; i < (int) std::size (accents); ++i)
+        ac.addItem (200 + i, i == 0 ? tr ("Couleur du thème") : juce::String (accents[i].n), true,
+                    i == 0 ? ui::appearance.accent.isTransparent() : ui::appearance.accent == juce::Colour (accents[i].c));
+    kn.addItem (300, "NEON", true, ui::appearance.knobStyle == 0);
+    kn.addItem (301, "MINIMAL", true, ui::appearance.knobStyle == 1);
+    for (int i = 0; i < 4; ++i)
+    {
+        const float s = 0.75f + 0.25f * (float) i;
+        sz.addItem (400 + i, juce::String ((int) (s * 100.f)) + " %", true, std::abs (ui::appearance.scale - s) < 0.01f);
+    }
+    for (auto* b : tabs)
+    {
+        const int pg = (int) b->getProperties()["page"];
+        if (pg == 0) continue;
+        tb.addItem (500 + pg, b->getButtonText(), true, ! ui::appearance.hiddenTabs[pg]);
+    }
+    m.addSectionHeader (tr ("APPARENCE"));
+    m.addSubMenu (tr ("Thème"), th);
+    m.addSubMenu (tr ("Couleur d'accent"), ac);
+    m.addSubMenu (tr ("Potards"), kn);
+    m.addItem (310, tr ("Image de fond (cover)"), true, ui::appearance.cover);
+    m.addSubMenu (tr ("Taille de la fenêtre"), sz);
+    m.addSubMenu (tr ("Onglets affichés"), tb);
+    m.addSeparator();
+    m.addItem (999, tr ("Tout remettre par défaut"));
+    juce::Component::SafePointer<RavennEditor> safe (this);
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&appearanceBtn), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto& a = ui::appearance;
+        if (r >= 100 && r < 110) { a.theme = r - 100; a.accent = juce::Colour(); }
+        else if (r >= 200 && r < 220) a.accent = r == 200 ? juce::Colour() : juce::Colour (accents[r - 200].c);
+        else if (r == 300 || r == 301) a.knobStyle = r - 300;
+        else if (r == 310) a.cover = ! a.cover;
+        else if (r >= 400 && r < 410) a.scale = 0.75f + 0.25f * (float) (r - 400);
+        else if (r >= 500 && r < 520) a.hiddenTabs.setBit (r - 500, ! a.hiddenTabs[r - 500]);
+        else if (r == 999) a = ui::Appearance();
+        ui::saveAppearance();
+        safe->applyAppearance();
+        if (r >= 400 && r < 410 || r == 999)
+            safe->setSize (juce::roundToInt (baseW * a.scale), juce::roundToInt (baseH * a.scale));
+    });
+}
+
+void RavennEditor::applyAppearance()
+{
+    // anciennes couleurs -> nouvelles : on remappe les couleurs deja donnees aux potards et boutons
+    const std::array<juce::Colour, 13> before { ui::bg, ui::panel, ui::edge, ui::track, ui::text, ui::dim, ui::violet, ui::cyan, ui::pink, ui::red, ui::amber, ui::green, ui::blue };
+    ui::applyTheme();
+    const std::array<juce::Colour, 13> after  { ui::bg, ui::panel, ui::edge, ui::track, ui::text, ui::dim, ui::violet, ui::cyan, ui::pink, ui::red, ui::amber, ui::green, ui::blue };
+    auto remap = [&] (juce::Colour c)
+    {
+        for (size_t i = 0; i < before.size(); ++i) if (c == before[i]) return after[i];
+        return c;
+    };
+    std::function<void (juce::Component&)> walk = [&] (juce::Component& comp)
+    {
+        if (auto* k = dynamic_cast<NeonKnob*> (&comp)) k->setAccent (remap (k->getAccent()));
+        if (auto* s = dynamic_cast<juce::Slider*> (&comp))
+            s->setColour (juce::Slider::rotarySliderFillColourId, remap (s->findColour (juce::Slider::rotarySliderFillColourId)));
+        if (auto* b = dynamic_cast<juce::TextButton*> (&comp))
+            b->setColour (juce::TextButton::buttonOnColourId, remap (b->findColour (juce::TextButton::buttonOnColourId)));
+        for (auto* ch : comp.getChildren()) walk (*ch);
+    };
+    walk (*this);
+    for (auto& pn : panels) pn.colour = remap (pn.colour);
+    lnf.applyColours();
+    background = {};
+    bgPage = -1;
+    sendLookAndFeelChange();
+    setPage (page);
+    resized();
+    repaint();
 }

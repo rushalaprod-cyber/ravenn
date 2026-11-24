@@ -3,7 +3,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_dsp/juce_dsp.h>
 #include "DSP.h"
-#include "Modules.h"
+#include "Modules19.h"
 #include "PresetManager.h"
 
 class RavennProcessor : public juce::AudioProcessor, private juce::Timer
@@ -72,6 +72,10 @@ public:
     // AUTO DE-ESS (one-shot, comme l'auto master) : ecoute ~5 s puis regle les potards
     void startDeEssLearn();
     int getDeEssLearnState() const { return dsLearnState.load(); }
+    // AUTO MULTIBAND (one-shot) : ecoute 5 s, regle seuils / ratios / temps des 4 bandes
+    std::atomic<int> mbLearnState { 0 };
+    void startMbLearn();
+    float getMbLearnProgress() const { return (float) juce::jlimit (0.0, 1.0, mbLearnSec / 5.0); }
     float getDeEssLearnProgress() const { return (float) juce::jlimit (0.0, 1.0, dsLearnSec / 5.0); }
     // Vue du de-esser : niveau des sifflantes et reduction, une tranche par 10 ms
     std::array<std::atomic<float>, 512> dsViewIn, dsViewGr;
@@ -190,10 +194,13 @@ private:
                            *specCut {}, *mbAuto {}, *dsAuto {},
                            *clipXLo {}, *clipXHi {}, *dsFreqHi {}, *voiceQ {}, *depth3dHi {}, *depth3dQ {},
                            *glueOn {}, *glueThr {}, *glueRatio {}, *glueAtt {}, *glueRel {}, *glueMakeup {}, *glueMix {}, *glueHpf {},
-                           *glueAuto {}, *kick {}, *dsOn {}, *imgX1 {}, *imgX2 {}, *mbSlope {}, *satSlope {}, *clipSlope {}, *imgSlope {};
+                           *glueAuto {}, *kick {}, *clipMSAmt {}, *postClip {}, *widthMode {}, *punchMode {}, *dsOn {}, *imgX1 {}, *imgX2 {}, *mbSlope {}, *satSlope {}, *clipSlope {}, *imgSlope {};
     } p;
     gdsp::MaskOpen maskOpen;
     gdsp::KickPresence kickFx;
+    gdsp::BassDepth bassDepth;
+    gdsp::BandMeter4 mbLearner;
+    double mbLearnSec = 0;
     gdsp::DeEsser dsLearner;
     // AUTO IN : mesure de l'entree (thread audio) pour regler IN a l'insertion
     double aiPeakSum = 0, aiWinPeak = 0, aiActive = 0; int aiWinCount = 0, aiWins = 0;

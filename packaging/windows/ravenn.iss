@@ -4,7 +4,7 @@
 #ifndef BuildDir
   #define BuildDir "..\..\build\ravenn_artefacts\Release"
 #endif
-#define AppVersion "1.8.0"
+#define AppVersion "1.9.0"
 
 [Setup]
 AppId={{7B1E5C2A-4D6F-4C1B-9A57-52A1E0D7F3C9}

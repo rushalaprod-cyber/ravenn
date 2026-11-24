@@ -56,6 +56,6 @@ jobs:
 
       - name: Validation Audio Unit (auval)
         run: |
-          sudo installer -pkg dist/ravenn-1.8.0-macos.pkg -target /
+          sudo installer -pkg dist/ravenn-1.9.0-macos.pkg -target /
           killall -9 AudioComponentRegistrar || true
           auval -v aufx Rvnn Rvnd

@@ -10,17 +10,17 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
     factory = {
         { u8 ("Défaut"), {} },
         { u8 ("Master Fort"),       { { "in", 3.0f }, { "mouth", 25.0f }, { "mask", 15.0f }, { "maskBand", 1.0f },
-                                      { "clip", 4.0f }, { "clipShape", 1.0f }, { "analog", 20.0f } } },
+                                      { "clip", 4.0f }, { "clipShape", 1.0f }, { "charType", 7.0f }, { "charAmt", 20.0f } } },
         { u8 ("Basses Profondes"),  { { "depth", 60.0f }, { "mouth", 35.0f }, { "monoBass", 1.0f }, { "monoFreq", 120.0f },
                                       { "clip", 2.0f }, { "clipShape", 1.0f } } },
         { u8 ("Large & Aéré"),      { { "mask", 35.0f }, { "maskBand", 3.0f }, { "width", 130.0f }, { "air", 2.5f },
                                       { "tilt", 1.0f }, { "clip", 2.0f } } },
-        { u8 ("Analog Glue"),       { { "analog", 60.0f }, { "clipShape", 2.0f }, { "clip", 2.0f }, { "mouth", 15.0f } } },
+        { u8 ("Analog Glue"),       { { "charType", 7.0f }, { "charAmt", 60.0f }, { "clipShape", 2.0f }, { "clip", 2.0f }, { "mouth", 15.0f } } },
         { u8 ("Clip Graves Seuls"), { { "clipBand", 1.0f }, { "clip", 5.0f }, { "clipShape", 1.0f } } },
         { u8 ("Clip Mids Seuls"),   { { "clipBand", 2.0f }, { "clip", 4.0f }, { "clipShape", 1.0f } } },
-        { u8 ("Aigus Domptés"),     { { "clipBand", 3.0f }, { "clip", 4.0f }, { "clipShape", 1.0f }, { "analog", 25.0f } } },
+        { u8 ("Aigus Domptés"),     { { "clipBand", 3.0f }, { "clip", 4.0f }, { "clipShape", 1.0f }, { "charType", 7.0f }, { "charAmt", 25.0f } } },
         { u8 ("Rap Master"),        { { "in", 2.0f }, { "mouth", 40.0f }, { "depth", 35.0f }, { "mask", 20.0f }, { "maskBand", 1.0f },
-                                      { "clip", 5.0f }, { "clipShape", 1.0f }, { "monoBass", 1.0f }, { "analog", 30.0f } } },
+                                      { "clip", 5.0f }, { "clipShape", 1.0f }, { "monoBass", 1.0f }, { "charType", 7.0f }, { "charAmt", 30.0f } } },
         { u8 ("Grosse Bouche"),     { { "mouth", 80.0f }, { "depth", 25.0f }, { "clip", 3.0f }, { "clipShape", 1.0f } } },
         { u8 ("Side Explosif"),     { { "mask", 70.0f }, { "maskBand", 2.0f }, { "width", 120.0f }, { "clip", 2.0f } } },
         { u8 ("Live Sans Latence"), { { "noLatency", 1.0f }, { "clip", 3.0f }, { "clipShape", 1.0f }, { "mouth", 20.0f } } },
@@ -34,7 +34,7 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
                                       { "satDrive2", 6.0f }, { "satStyle2", 1.0f } } },
         { u8 ("Saturation Chaude"), { { "satDrive1", 6.0f }, { "satDrive2", 4.0f }, { "satDrive3", 3.0f },
                                       { "satStyle1", 1.0f }, { "satStyle2", 0.0f }, { "satStyle3", 2.0f }, { "clip", 2.0f } } },
-        { u8 ("Air & Espace"),      { { "airMid", 35.0f }, { "airHigh", 50.0f }, { "depth3d", 40.0f }, { "space", 20.0f },
+        { u8 ("Air & Espace"),      { { "airMid", 35.0f }, { "air", 5.0f }, { "depth3d", 40.0f }, { "space", 20.0f },
                                       { "spaceSize", 35.0f } } },
         { u8 ("Voix Devant"),       { { "voice", 2.5f }, { "voiceFreq", 2800.0f }, { "airMid", 20.0f }, { "mask", 15.0f },
                                       { "maskBand", 2.0f } } },
@@ -42,7 +42,7 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
                                       { "clipShape", 1.0f }, { "amTarget", 5.0f } } },
         { u8 ("Gros Saucisson"),    { { "fatten", 55.0f }, { "fatColor", 60.0f }, { "clip", 2.0f }, { "clipShape", 1.0f } } },
         { u8 ("Large 3 Bandes"),    { { "imgLow", 60.0f }, { "imgMid", 115.0f }, { "imgHigh", 140.0f }, { "depth3d", 30.0f }, { "monoBass", 1.0f } } },
-        { u8 ("Voix En Avant"),     { { "voiceFocus", 60.0f }, { "voiceFreq", 2800.0f }, { "stabilize", 30.0f } } },
+        { u8 ("Voix En Avant"),     { { "voice", 5.14f }, { "voiceFreq", 2800.0f }, { "stabilize", 30.0f } } },
         { u8 ("Loud Club"),         { { "in", 3.0f }, { "clip", 5.0f }, { "clipShape", 1.0f }, { "limGain", 4.0f }, { "limStyle", 5.0f },
                                       { "punch", 20.0f }, { "mouth", 25.0f }, { "amTarget", 2.0f } } },
     };
@@ -64,20 +64,20 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
     // VOIX
     stem ("Voix Lead Rap",      { { "lowCut", 90.f }, { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 2.f }, { "glueAtt", 2.f },
                                   { "dsAuto", 1.f }, { "dsRange", 6.f }, { "dsFreqHi", 12000.f }, { "voice", 2.0f }, { "voiceFreq", 3000.f },
-                                  { "voiceQ", 1.0f }, { "airHigh", 30.f }, { "satDrive2", 3.f }, { "dynFreq1", 350.f }, { "dynRange1", -3.f } });
+                                  { "voiceQ", 1.0f }, { "air", 3.0f }, { "satDrive2", 3.f }, { "dynFreq1", 350.f }, { "dynRange1", -3.f } });
     stem ("Voix Lead Chant",    { { "lowCut", 80.f }, { "glueOn", 1.f }, { "glueThr", -14.f }, { "glueRatio", 1.f }, { "glueAtt", 3.f },
                                   { "dsAuto", 1.f }, { "dsRange", 5.f }, { "voice", 1.5f }, { "voiceFreq", 2500.f }, { "voiceQ", 0.8f },
-                                  { "airMid", 20.f }, { "airHigh", 40.f }, { "space", 12.f }, { "spaceSize", 30.f } });
+                                  { "airMid", 20.f }, { "air", 4.0f }, { "space", 12.f }, { "spaceSize", 30.f } });
     stem ("Voix Backs",         { { "lowCut", 150.f }, { "glueOn", 1.f }, { "glueThr", -18.f }, { "glueRatio", 2.f }, { "dsAuto", 1.f },
                                   { "dsRange", 8.f }, { "voice", -1.5f }, { "voiceFreq", 2500.f }, { "imgMid", 140.f }, { "imgHigh", 150.f },
-                                  { "space", 20.f }, { "airHigh", 25.f } });
+                                  { "space", 20.f }, { "air", 2.5f } });
     stem ("Voix Podcast",       { { "lowCut", 80.f }, { "glueOn", 1.f }, { "glueThr", -20.f }, { "glueRatio", 2.f }, { "dsAuto", 1.f },
                                   { "dsRange", 6.f }, { "voice", 2.0f }, { "voiceFreq", 2000.f }, { "voiceQ", 0.7f }, { "width", 0.f } });
     // DRUMS
     stem ("Drums Bus Punch",    { { "glueOn", 1.f }, { "glueThr", -14.f }, { "glueRatio", 2.f }, { "glueAtt", 4.f }, { "glueHpf", 2.f },
                                   { "punch", 40.f }, { "clip", 3.f }, { "clipShape", 1.f }, { "satDrive1", 3.f }, { "monoBass", 1.f } });
     stem ("Drums Trap",         { { "glueOn", 1.f }, { "glueThr", -12.f }, { "glueRatio", 2.f }, { "glueAtt", 4.f }, { "glueHpf", 2.f },
-                                  { "punch", 55.f }, { "clip", 5.f }, { "clipShape", 0.f }, { "airHigh", 25.f }, { "monoBass", 1.f } });
+                                  { "punch", 55.f }, { "clip", 5.f }, { "clipShape", 0.f }, { "air", 2.5f }, { "monoBass", 1.f } });
     stem ("Drums Live Rock",    { { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 2.f }, { "glueAtt", 5.f }, { "glueMix", 60.f },
                                   { "punch", 25.f }, { "charType", 0.f }, { "charAmt", 35.f }, { "space", 10.f } });
     // BASSE
@@ -87,11 +87,11 @@ PresetManager::PresetManager (juce::AudioProcessorValueTreeState& s) : state (s)
                                   { "glueRatio", 2.f }, { "glueAtt", 3.f }, { "satDrive2", 4.f }, { "charType", 3.f }, { "charAmt", 30.f } });
     // INSTRUS
     stem ("Synthés Larges",     { { "lowCut", 120.f }, { "imgMid", 130.f }, { "imgHigh", 150.f }, { "depth3d", 35.f }, { "glueOn", 1.f },
-                                  { "glueThr", -16.f }, { "glueRatio", 1.f }, { "airHigh", 25.f } });
+                                  { "glueThr", -16.f }, { "glueRatio", 1.f }, { "air", 2.5f } });
     stem ("Guitares",           { { "lowCut", 90.f }, { "glueOn", 1.f }, { "glueThr", -16.f }, { "glueRatio", 1.f }, { "glueAtt", 4.f },
                                   { "dynFreq1", 3200.f }, { "dynRange1", -3.f }, { "imgMid", 120.f }, { "charType", 2.f }, { "charAmt", 25.f } });
     stem ("Piano / Claviers",   { { "lowCut", 50.f }, { "glueOn", 1.f }, { "glueThr", -18.f }, { "glueRatio", 0.f }, { "glueAtt", 4.f },
-                                  { "airMid", 15.f }, { "airHigh", 25.f }, { "space", 12.f }, { "imgHigh", 120.f } });
+                                  { "airMid", 15.f }, { "air", 2.5f }, { "space", 12.f }, { "imgHigh", 120.f } });
 
     // Categories (ordre d'affichage du menu)
     auto cat = [] (const juce::String& n) -> juce::String
@@ -132,7 +132,7 @@ int PresetManager::importFiles (const juce::Array<juce::File>& files)
         // on verifie que c'est bien un preset ravenn (XML avec l'etat RAVENN)
         auto xml = juce::XmlDocument::parse (f);
         if (xml == nullptr || ! xml->hasTagName (state.state.getType())) continue;
-        auto dest = dir.getNonexistentChildFile (f.getFileNameWithoutExtension(), ".preset", false);
+        auto dest = dir.getNonexistentChildFile (f.getFileNameWithoutExtension(), ".rvn", false);
         if (f.copyFileTo (dest)) ++n;
     }
     return n;
@@ -169,7 +169,13 @@ std::vector<std::pair<juce::String, juce::StringArray>> PresetManager::getFactor
 juce::StringArray PresetManager::getUserNames() const
 {
     juce::StringArray names;
-    for (auto& f : getDirectory().findChildFiles (juce::File::findFiles, false, "*.preset"))
+    // 1.9 : format .rvn ; les anciens .preset sont renommes une fois
+    for (auto& old : getDirectory().findChildFiles (juce::File::findFiles, false, "*.preset"))
+    {
+        auto dest = old.withFileExtension (".rvn");
+        if (! dest.existsAsFile()) old.moveFileTo (dest);
+    }
+    for (auto& f : getDirectory().findChildFiles (juce::File::findFiles, false, "*.rvn"))
         if (! isFactory (f.getFileNameWithoutExtension()))
             names.add (f.getFileNameWithoutExtension());
     names.sortNatural();
@@ -216,7 +222,7 @@ void PresetManager::load (const juce::String& name)
         }
     }
 
-    auto file = getDirectory().getChildFile (name + ".preset");
+    auto file = getDirectory().getChildFile (name + ".rvn");
     if (! file.existsAsFile()) return;
 
     if (auto xml = juce::parseXML (file))
@@ -241,7 +247,7 @@ bool PresetManager::save (const juce::String& rawName)
     st.setProperty ("preset", name, nullptr);
     if (auto xml = st.createXml())
     {
-        if (xml->writeTo (dir.getChildFile (name + ".preset")))
+        if (xml->writeTo (dir.getChildFile (name + ".rvn")))
         {
             current = name;
             return true;
@@ -253,7 +259,7 @@ bool PresetManager::save (const juce::String& rawName)
 bool PresetManager::remove (const juce::String& name)
 {
     if (isFactory (name)) return false;
-    auto file = getDirectory().getChildFile (name + ".preset");
+    auto file = getDirectory().getChildFile (name + ".rvn");
     if (! file.existsAsFile()) return false;
     const bool ok = file.moveToTrash();
     if (ok) current = factory.front().name;
